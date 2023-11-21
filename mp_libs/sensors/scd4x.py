@@ -95,7 +95,7 @@ class SCD4X:
 
     """
 
-    def __init__(self, i2c_bus: I2C, address: int = _SCD4X_DEFAULT_ADDR) -> None:
+    def __init__(self, i2c_bus: I2C, address: int = _SCD4X_DEFAULT_ADDR, stop_measurements: bool = True) -> None:
         self.address = address
         self.i2c_device = i2c_bus
         self._buffer = bytearray(18)
@@ -107,7 +107,8 @@ class SCD4X:
         self._relative_humidity = None
         self._co2 = None
 
-        self.stop_periodic_measurement()
+        if stop_measurements:
+            self.stop_periodic_measurement()
 
     @property
     def CO2(self) -> int:  # pylint:disable=invalid-name
@@ -227,9 +228,9 @@ class SCD4X:
             self._buffer[7],
         )
 
-    def stop_periodic_measurement(self) -> None:
+    def stop_periodic_measurement(self, delay_sec: float = 0.5) -> None:
         """Stop measurement mode"""
-        self._send_command(_SCD4X_STOPPERIODICMEASUREMENT, cmd_delay=0.5)
+        self._send_command(_SCD4X_STOPPERIODICMEASUREMENT, cmd_delay=delay_sec)
 
     def start_periodic_measurement(self) -> None:
         """Put sensor into working mode, about 5s per measurement
