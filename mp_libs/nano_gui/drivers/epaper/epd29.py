@@ -84,12 +84,14 @@ class EPD(framebuf.FrameBuffer):
 
     def init(self):
         # Hardware reset
-        self._rst(1)
-        sleep_ms(200)
-        self._rst(0)
-        sleep_ms(200)
-        self._rst(1)
-        sleep_ms(200)
+        if self._rst:
+            self._rst(1)
+            sleep_ms(200)
+            self._rst(0)
+            sleep_ms(200)
+            self._rst(1)
+            sleep_ms(200)
+
         # Initialisation
         cmd = self._command
         # Power setting. Data from Adafruit.
