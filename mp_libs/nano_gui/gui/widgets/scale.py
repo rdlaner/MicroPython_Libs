@@ -6,9 +6,9 @@
 # Usage:
 # from gui.widgets.scale import Scale
 
-from gui.core.nanogui import DObject
-from gui.core.writer import Writer
-from gui.core.colors import BLACK
+from mp_libs.nano_gui.gui.core.nanogui import DObject
+from mp_libs.nano_gui.gui.core.writer import Writer
+from mp_libs.nano_gui.gui.core.colors import BLACK
 
 class Scale(DObject):
     def __init__(self, writer, row, col, *,

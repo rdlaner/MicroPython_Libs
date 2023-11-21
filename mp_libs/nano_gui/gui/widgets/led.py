@@ -3,8 +3,8 @@
 # Released under the MIT License (MIT). See LICENSE.
 # Copyright (c) 2018-2020 Peter Hinch
 
-from gui.core.nanogui import DObject, fillcircle, circle
-from gui.widgets.label import Label
+from mp_libs.nano_gui.gui.core.nanogui import DObject, fillcircle, circle
+from mp_libs.nano_gui.gui.widgets.label import Label
 
 class LED(DObject):
     def __init__(self, writer, row, col, *, height=12,

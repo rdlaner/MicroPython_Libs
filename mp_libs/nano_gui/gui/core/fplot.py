@@ -23,7 +23,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-from gui.core.nanogui import DObject, circle
+from mp_libs.nano_gui.gui.core.nanogui import DObject, circle
 from cmath import rect, pi
 from micropython import const
 from array import array

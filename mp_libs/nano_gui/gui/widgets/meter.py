@@ -3,8 +3,8 @@
 # Released under the MIT License (MIT). See LICENSE.
 # Copyright (c) 2018-2020 Peter Hinch
 
-from gui.core.nanogui import DObject
-from gui.widgets.label import Label
+from mp_libs.nano_gui.gui.core.nanogui import DObject
+from mp_libs.nano_gui.gui.widgets.label import Label
 
 
 class Meter(DObject):

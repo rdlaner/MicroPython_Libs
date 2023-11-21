@@ -3,8 +3,8 @@
 # Released under the MIT License (MIT). See LICENSE.
 # Copyright (c) 2020 Peter Hinch
 
-from color_setup import SSD
-from gui.core.writer import CWriter
+from mp_libs.nano_gui.color_setup import SSD
+from mp_libs.nano_gui.gui.core.writer import CWriter
 
 # Code can be portable between 4-bit and other drivers by calling create_color
 def create_color(idx, r, g, b):

@@ -9,8 +9,8 @@
 # Has position, colors and border definition.
 # border: False no border None use bgcolor, int: treat as color
 
-from gui.core.colors import *  # Populate color LUT before use.
-from gui.core.writer import Writer
+from mp_libs.nano_gui.gui.core.colors import *  # Populate color LUT before use.
+from mp_libs.nano_gui.gui.core.writer import Writer
 import framebuf
 import gc
 import sys

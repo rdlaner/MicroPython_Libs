@@ -6,8 +6,8 @@
 # Usage:
 # from gui.widgets.textbox import Textbox
 
-from gui.core.nanogui import DObject
-from gui.core.writer import Writer
+from mp_libs.nano_gui.gui.core.nanogui import DObject
+from mp_libs.nano_gui.gui.core.writer import Writer
 
 # Reason for no tab support in private/reason_for_no_tabs
 

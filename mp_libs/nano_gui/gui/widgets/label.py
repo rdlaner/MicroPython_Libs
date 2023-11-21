@@ -4,8 +4,8 @@
 # Copyright (c) 2018-2022 Peter Hinch
 
 from micropython import const
-from gui.core.nanogui import DObject
-from gui.core.writer import Writer
+from mp_libs.nano_gui.gui.core.nanogui import DObject
+from mp_libs.nano_gui.gui.core.writer import Writer
 
 ALIGN_LEFT = const(0)
 ALIGN_RIGHT = const(1)

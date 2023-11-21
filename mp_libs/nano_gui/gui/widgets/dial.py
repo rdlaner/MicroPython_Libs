@@ -4,8 +4,8 @@
 # Copyright (c) 2018-2020 Peter Hinch
 
 import cmath
-from gui.core.nanogui import DObject, circle, fillcircle
-from gui.widgets.label import Label
+from mp_libs.nano_gui.gui.core.nanogui import DObject, circle, fillcircle
+from mp_libs.nano_gui.gui.widgets.label import Label
 
 # Line defined by polar coords; origin and line are complex
 def polar(dev, origin, line, color):
