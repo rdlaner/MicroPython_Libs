@@ -68,7 +68,6 @@ class EPD(framebuf.FrameBuffer):
         mode = framebuf.MONO_VLSB if landscape else framebuf.MONO_HLSB
         self.palette = BoolPalette(mode)
         super().__init__(self._buffer, self.width, self.height, mode)
-        self.init()
 
     def _command(self, command, data=None, end=True):
         self._cs(0)
