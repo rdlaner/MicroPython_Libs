@@ -20,8 +20,9 @@
 import framebuf
 import uasyncio as asyncio
 from micropython import const
-from time import sleep_ms, sleep_us, ticks_ms, ticks_us, ticks_diff
+from time import sleep_ms, sleep_us, ticks_ms, ticks_diff
 from mp_libs.nano_gui.drivers.boolpalette import BoolPalette
+
 
 def asyncio_running():
     try:
@@ -30,7 +31,9 @@ def asyncio_running():
         return False
     return True
 
-MAX_BLOCK = const(20)  # Maximum blocking time (ms) for asynchronous show.
+
+_MAX_BLOCK = const(20)  # Maximum blocking time (ms) for asynchronous show.
+
 
 class EPD(framebuf.FrameBuffer):
     # A monochrome approach should be used for coding this. The rgb method ensures
@@ -92,6 +95,9 @@ class EPD(framebuf.FrameBuffer):
             self._rst(1)
             sleep_ms(200)
 
+        # Refer to this for init sequences and grayscale support:
+        # https://github.com/adafruit/Adafruit_CircuitPython_IL0373/blob/main/adafruit_il0373.py#L54
+
         # Initialisation
         cmd = self._command
         # Power setting. Data from Adafruit.
@@ -106,7 +112,7 @@ class EPD(framebuf.FrameBuffer):
         # CDI: As used by Adafruit. Datasheet is confusing on this.
         # See https://github.com/adafruit/Adafruit_CircuitPython_IL0373/issues/11
         # With 0x37 got white border on flexible display, black on FeatherWing
-        # 0xf7 still produced black border on FeatherWing
+        # 0xf7 still produced black border on FeatherWing, options: x17, x37, x57, x77, xD7, xF7
         cmd(b'\x50', b'\x37')
         # PLL: correct for 150Hz as specified in Adafruit code
         cmd(b'\x30', b'\x29')
@@ -121,12 +127,12 @@ class EPD(framebuf.FrameBuffer):
     # For use in synchronous code: blocking wait on ready state.
     def wait_until_ready(self):
         sleep_ms(50)
-        while not self.ready():  
+        while not self.ready():
             sleep_ms(100)
 
     # Return immediate status. Pin state: 0 == busy.
     def ready(self):
-        return not(self._as_busy or (self._busy() == 0))
+        return not (self._as_busy or (self._busy() == 0))
 
     async def _as_show(self, buf1=bytearray(1)):
         mvb = self._mvb
@@ -150,14 +156,14 @@ class EPD(framebuf.FrameBuffer):
                 if not vbc:
                     hpc += 1
                     idx = iidx + hpc
-                if not(i & 0x0f) and (ticks_diff(ticks_ms(), t) > _MAX_BLOCK):
+                if not (i & 0x0f) and (ticks_diff(ticks_ms(), t) > _MAX_BLOCK):
                     await asyncio.sleep_ms(0)
                     t = ticks_ms()
         else:
             for i, b in enumerate(mvb):
                 buf1[0] = ~b
                 dat(buf1)
-                if not(i & 0x0f) and (ticks_diff(ticks_ms(), t) > _MAX_BLOCK):
+                if not (i & 0x0f) and (ticks_diff(ticks_ms(), t) > _MAX_BLOCK):
                     await asyncio.sleep_ms(0)
                     t = ticks_ms()
 
