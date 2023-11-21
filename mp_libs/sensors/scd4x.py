@@ -329,11 +329,12 @@ class SCD4X:
 
         try:
             self.i2c_device.writeto(self.address, self._cmd)
-        except OSError as err:
+        except OSError:
             raise RuntimeError(
-                "Could not communicate via I2C, some commands/settings "
-                "unavailable while in working mode"
-            ) from err
+                "Could not communicate via I2C, some commands/settings " +
+                "unavailable while in working mode.\n" +
+                f"Command: {cmd}"
+            )
         time.sleep(cmd_delay)
 
     def _set_command_value(self, cmd, value, cmd_delay=0):
@@ -360,4 +361,3 @@ class SCD4X:
                 else:
                     crc = crc << 1
         return crc & 0xFF  # return the bottom 8 bits
-
