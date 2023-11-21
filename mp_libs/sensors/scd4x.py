@@ -1,11 +1,15 @@
-# original version
+# Original version
 # SPDX-FileCopyrightText: 2017 Scott Shawcroft, written for Adafruit Industries
 # SPDX-FileCopyrightText: Copyright (c) 2021 ladyada for Adafruit Industries
 #
 # SPDX-License-Identifier: MIT
 #
-# this version: also Copyright (c) 2022-2023 peter-l5
+# Sourced from
+# Copyright (c) 2022-2023 peter-l5
 # build version: v102
+#
+# This version author: rdlaner
+# version: v0.1.0
 
 """
 `micropython_scd4x`
@@ -14,7 +18,7 @@
 Driver for Sensirion SCD4X CO2 sensor
 
 
-* Author(s): ladyada, peter-l5
+* Author(s): ladyada, peter-l5, rdlaner
 
 Implementation Notes
 --------------------
@@ -32,9 +36,6 @@ Implementation Notes
 import time
 from machine import I2C
 from micropython import const
-
-__version__ = "v102"
-__repo__ = "https://github.com/peter-l5/MicroPython_SCD4X"
 
 SCD4X_DEFAULT_ADDR = 0x62
 _SCD4X_REINIT = const(0x3646)
