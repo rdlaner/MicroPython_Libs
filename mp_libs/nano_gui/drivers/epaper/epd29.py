@@ -67,21 +67,19 @@ class EPD(framebuf.FrameBuffer):
         super().__init__(self._buffer, self.width, self.height, mode)
         self.init()
 
-    def _command(self, command, data=None):
-        self._dc(0)
+    def _command(self, command, data=None, end=True):
         self._cs(0)
+        self._dc(0)
         self._spi.write(command)
-        self._cs(1)
-        if data is not None:
-            self._data(data)
-
-    # Datasheet P26 seems to mandate CS False after each byte. Ugh.
-    def _data(self, data, buf1=bytearray(1)):
         self._dc(1)
-        for b in data:
-            self._cs(0)
-            buf1[0] = b
-            self._spi.write(buf1)
+        if data:
+            self._spi.write(data)
+        if end:
+            self._cs(1)
+
+    def _data(self, data, end=False):
+        self._spi.write(data)
+        if end:
             self._cs(1)
 
     def init(self):
@@ -189,7 +187,7 @@ class EPD(framebuf.FrameBuffer):
         # DATA_START_TRANSMISSION_2 Datasheet P31 indicates this sets
         # busy pin low (True) and that it stays logically True until
         # refresh is complete. In my testing this doesn't happen.
-        cmd(b'\x13')
+        cmd(b'\x13', end=False)
         if self._lsc:  # Landscape mode
             wid = self.width
             tbc = self.height // 8  # Vertical bytes per column
