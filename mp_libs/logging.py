@@ -34,6 +34,7 @@ class LogRecord:
         self.levelname = _level_dict[level]
         self.message = message
         self.ct = time.time()
+        self.mono = time.ticks_ms()
         self.msecs = int((self.ct - int(self.ct)) * 1000)
         self.asctime = None
 
@@ -101,6 +102,7 @@ class Formatter:
             "msecs": record.msecs,
             "asctime": record.asctime,
             "levelname": record.levelname,
+            "mono": record.mono,
         }
 
 
@@ -250,4 +252,3 @@ def basicConfig(
 
 if hasattr(sys, "atexit"):
     sys.atexit(shutdown)
-
