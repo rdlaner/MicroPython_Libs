@@ -32,12 +32,13 @@ Implementation Notes
 * The adafruit version and documentation can be found at
 * https://github.com/adafruit/Adafruit_CircuitPython_SCD4X.git
 """
-
+# Standard imports
 import time
 from machine import I2C
 from micropython import const
 
-SCD4X_DEFAULT_ADDR = 0x62
+# Constants
+_SCD4X_DEFAULT_ADDR = const(0x62)
 _SCD4X_REINIT = const(0x3646)
 _SCD4X_FACTORYRESET = const(0x3632)
 _SCD4X_FORCEDRECAL = const(0x362F)
@@ -94,12 +95,8 @@ class SCD4X:
 
     """
 
-    def __init__(self, i2c_bus: I2C, address: int = SCD4X_DEFAULT_ADDR) -> None:
-        print("__init__ :", dir())
-        print("address : %x" % address)
-        print("i2c_bus : ", i2c_bus)
+    def __init__(self, i2c_bus: I2C, address: int = _SCD4X_DEFAULT_ADDR) -> None:
         self.address = address
-        print(i2c_bus)
         self.i2c_device = i2c_bus
         self._buffer = bytearray(18)
         self._cmd = bytearray(2)
