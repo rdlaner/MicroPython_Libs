@@ -1,2 +1,2 @@
-# CircuitPython_Libs
-Custom libraries for Circuitpython projects.
+# MicroPython_Libs
+Custom libraries for MicroPython projects.

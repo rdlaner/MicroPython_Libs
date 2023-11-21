@@ -1,25 +1,27 @@
 """Network Support Library"""
 # pylint: disable=no-name-in-module, import-error, disable=no-member, c-extension-no-member
+# pyright: reportGeneralTypeIssues=false
 # Standard imports
-import microcontroller
-import rtc
-import socketpool
+import binascii
+import machine
+import ntptime
 import ssl
-import traceback
-import wifi
 from micropython import const
 
 # Third party imports
-import adafruit_logging as logging
-import adafruit_minimqtt.adafruit_minimqtt as MQTT
-import adafruit_ntp
-from cp_libs.protocols import InterfaceProtocol
-from cp_libs.protocols.min_iot_protocol import MinIotProtocol
-from cp_libs.protocols.serial_protocols import SerialProtocol
-from cp_libs.protocols.wifi_protocols import EspnowProtocol, MqttProtocol, WifiProtocol
+from umqtt.simple import MQTTClient as MQTT
+from mp_libs import logging
+from mp_libs.protocols import InterfaceProtocol
+from mp_libs.protocols.min_iot_protocol import MinIotProtocol
+from mp_libs.protocols.serial_protocols import SerialProtocol
+from mp_libs.protocols.espnow_protocol import EspnowProtocol
+from mp_libs.protocols.wifi_protocols import MqttProtocol, WifiProtocol
 
 # Local imports
-from config import config
+try:
+    from config import config
+except ImportError:
+    config = {"logging_level": logging.INFO}
 from secrets import secrets
 
 # Constants
@@ -29,17 +31,22 @@ TZ_OFFSET_PACIFIC = const(-8)
 # Globals
 logger = logging.getLogger("network")
 logger.setLevel(config["logging_level"])
+stream_handler = logging.StreamHandler()
+stream_handler.setLevel(config["logging_level"])
+stream_handler.setFormatter(logging.Formatter("%(mono)d %(name)s-%(levelname)s:%(message)s"))
+logger.addHandler(stream_handler)
+
+# TODO: Switch from umqtt to mqtt_as
 
 
 class Network(InterfaceProtocol):
     """Generic network class for utilizing any protocol that adheres to the InterfaceProtocol.
 
-    Extends InterfaceProtocol with NTP support, if requested.
     Provides factory classmethods for creating utilizing common protocol combinations.
     """
-    def __init__(self, transport: InterfaceProtocol, ntp: adafruit_ntp.NTP = None):
+    def __init__(self, transport: InterfaceProtocol):
         self.transport = transport
-        self.ntp = ntp
+        self.rtc = machine.RTC()
 
     def connect(self, **kwargs) -> bool:
         return self.transport.connect(**kwargs)
@@ -51,18 +58,10 @@ class Network(InterfaceProtocol):
         return self.transport.is_connected()
 
     def ntp_time_sync(self) -> bool:
-        success = True
-        if self.ntp:
-            try:
-                rtc.RTC().datetime = self.ntp.datetime
-            except OSError as exc:
-                logger.error("NTP time sync failed:")
-                logger.error(f"{''.join(traceback.format_exception(exc, chain=True))}")
-                success = False
-        else:
-            logger.warning("NTP not enabled for this network")
+        # TODO: Right now this only works w/ wifi...
+        # ntptime.settime()
 
-        return success
+        return True
 
     def receive(self, rxed_data: list, **kwargs) -> bool:
         return self.transport.receive(rxed_data, **kwargs)
@@ -93,7 +92,7 @@ class Network(InterfaceProtocol):
         Returns:
             Network: Network instance.
         """
-        client_id = id_prefix + str(int.from_bytes(microcontroller.cpu.uid, 'little') >> 29)
+        client_id = id_prefix + binascii.hexlify(machine.unique_id()).decode("utf-8")
         espnow_protocol = EspnowProtocol(config["epn_peer_mac"], hostname=client_id, channel=config["epn_channel"])
 
         return cls(espnow_protocol)
@@ -110,7 +109,7 @@ class Network(InterfaceProtocol):
         Returns:
             Network: Network instance.
         """
-        client_id = id_prefix + str(int.from_bytes(microcontroller.cpu.uid, 'little') >> 29)
+        client_id = id_prefix + binascii.hexlify(machine.unique_id()).decode("utf-8")
         espnow_protocol = EspnowProtocol(config["epn_peer_mac"], hostname=client_id, channel=config["epn_channel"])
         serial_protocol = SerialProtocol(espnow_protocol, mtu_size_bytes=DEFAULT_MTU_SIZE_BYTES)
         min_iot_protocol = MinIotProtocol(serial_protocol)
@@ -145,31 +144,26 @@ class Network(InterfaceProtocol):
         Returns:
             Network: Network instance.
         """
-        client_id = id_prefix + str(int.from_bytes(microcontroller.cpu.uid, 'little') >> 29)
-        socket_pool = socketpool.SocketPool(wifi.radio)
-        ntp = adafruit_ntp.NTP(socket_pool, tz_offset=TZ_OFFSET_PACIFIC)
+        client_id = id_prefix + binascii.hexlify(machine.unique_id()).decode("utf-8")
 
-        client = MQTT.MQTT(
+        client = MQTT(
             client_id=client_id,
-            broker=secrets["mqtt_broker"],
+            server=secrets["mqtt_broker"],
             port=secrets["mqtt_port"],
-            username=secrets["mqtt_username"],
+            user=secrets["mqtt_username"],
             password=secrets["mqtt_password"],
-            socket_pool=socket_pool,
-            ssl_context=ssl.create_default_context(),
-            keep_alive=keep_alive_sec if keep_alive_sec else config["keep_alive_sec"],
-            connect_retries=config["connect_retries"],
-            recv_timeout=config["recv_timeout_sec"],
+            keepalive=keep_alive_sec if keep_alive_sec else config["keep_alive_sec"],
         )
-        client.on_connect = on_connect_cb
-        client.on_disconnect = on_disconnect_cb
-        client.on_publish = on_publish_cb
-        client.on_subscribe = on_sub_cb
-        client.on_unsubscribe = on_unsub_cb
-        client.on_message = on_message_cb
-        client.enable_logger(logging, log_level=config["logging_level"])
+        # client.on_connect = on_connect_cb
+        # client.on_disconnect = on_disconnect_cb
+        # client.on_publish = on_publish_cb
+        # client.on_subscribe = on_sub_cb
+        # client.on_unsubscribe = on_unsub_cb
+        # client.on_message = on_message_cb
+        # client.enable_logger(logging, log_level=config["logging_level"])
+        client.set_callback(on_message_cb)
 
         wifi_protocol = WifiProtocol(secrets["ssid"], secrets["password"], client_id, config["wifi_channel"])
         mqtt_protocol = MqttProtocol(wifi_protocol, client)
 
-        return cls(mqtt_protocol, ntp)
+        return cls(mqtt_protocol)

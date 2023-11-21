@@ -1,4 +1,5 @@
 """Minimal IoT Protocol Implementation"""
+# pyright: reportGeneralTypeIssues=false
 # TODO: Update miniot and serial protocol receive functions to return True even if only partial msg
 #       has been received, require the user to check for None to know if a full msg is returned.
 #       This will allow users to know when to poll repeatedly which is important for those that
@@ -10,8 +11,8 @@ import time
 from micropython import const
 
 # Third party imports
-import adafruit_logging as logging
-from cp_libs.protocols import InterfaceProtocol
+from mp_libs import logging
+from mp_libs.protocols import InterfaceProtocol
 
 # Local imports
 try:
@@ -24,6 +25,10 @@ except ImportError:
 # Globals
 logger = logging.getLogger("miniot")
 logger.setLevel(config["logging_level"])
+stream_handler = logging.StreamHandler()
+stream_handler.setLevel(config["logging_level"])
+stream_handler.setFormatter(logging.Formatter("%(mono)d %(name)s-%(levelname)s:%(message)s"))
+logger.addHandler(stream_handler)
 
 
 class MinIotMessage():

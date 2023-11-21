@@ -1,15 +1,17 @@
 """Serial Protocol Implementation"""
+# pyright: reportGeneralTypeIssues=false
+# TODO: Could use ctypes Union to reduce SerialPacket header size.
+
 # Standard imports
 import binascii
 import struct
-import traceback
 from collections import namedtuple
 from math import ceil
 from micropython import const
 
 # Third party imports
-import adafruit_logging as logging
-from cp_libs.protocols import InterfaceProtocol
+from mp_libs import logging
+from mp_libs.protocols import InterfaceProtocol
 
 # Local imports
 try:
@@ -29,6 +31,10 @@ SERIAL_PACKET_META_DATA_SIZE_BYTES = SERIAL_PACKET_HDR_SIZE_BYTES + SERIAL_PACKE
 # Globals
 logger = logging.getLogger("serial-protocols")
 logger.setLevel(config["logging_level"])
+stream_handler = logging.StreamHandler()
+stream_handler.setLevel(config["logging_level"])
+stream_handler.setFormatter(logging.Formatter("%(asctime)s %(name)s [%(levelname)s]:%(message)s"))
+logger.addHandler(stream_handler)
 SerialPacketHeader = namedtuple("SerialPacketHeader",
                                 ("delim",
                                  "msg_id",
@@ -37,8 +43,6 @@ SerialPacketHeader = namedtuple("SerialPacketHeader",
                                  "payload_size",
                                  "encoded"
                                  ))
-
-# TODO: Could use ctypes Union to reduce SerialPacket header size.
 
 
 class SerialPacketException(Exception):
@@ -129,7 +133,7 @@ class SerialPacket():
             header = SerialPacketHeader(*struct.unpack(SERIAL_PACKET_HDR_FORMAT_STR, header_data))
         except RuntimeError as exc:
             raise SerialPacketException(
-                f"Failed to deserialize packet header: {header_data}") from exc
+                f"Failed to deserialize packet header: {header_data}\nexc: {exc}")
 
         # Validate header
         if header.delim != SERIAL_PACKET_DELIM:
@@ -200,7 +204,7 @@ class SerialMessage():
             return packet
         else:
             self._iter_idx = 0
-            raise StopIteration
+            raise StopIteration("noop")
 
     def __repr__(self) -> str:
         return "\n".join(str(packet) for packet in self.packets)
@@ -466,16 +470,14 @@ class SerialProtocol(InterfaceProtocol):
                 try:
                     self._process_packet(packet)
                 except SerialPacketException as exc:
-                    logger.error("Failed processing SerialPacket")
-                    logger.error(f"{''.join(traceback.format_exception(exc, chain=True))}")
+                    logger.exception("Failed processing SerialPacket", exc_info=exc)
 
             # Extract all fully formed serial messages, if enough packets have been received
             while True:
                 try:
                     msg = self._extract_msg()
                 except SerialMessageException as exc:
-                    logger.error("Failed extracting SerialMessage")
-                    logger.error(f"{''.join(traceback.format_exception(exc, chain=True))}")
+                    logger.exception("Failed extracting SerialMessage", exc_info=exc)
                     continue
 
                 # Extract msg payload from any SerialMessages.

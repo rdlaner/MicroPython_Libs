@@ -1,8 +1,9 @@
 """Memory Support Library"""
 # pylint: disable=c-extension-no-member
+# pyright: reportGeneralTypeIssues=false
 # Standard imports
-import alarm
 import struct
+from machine import RTC
 from micropython import const
 
 # Third party imports
@@ -27,8 +28,8 @@ ELEMENT_NAME_OFFSET = const(3)
 class BackupRAM():
     """Backup RAM Abstraction
 
-    For those boards that support CircuitPython's sleep_memory, this class provides easy access
-    API for storing and retrieving data from sleep memory. Sleep memory is essentially a contiguous
+    For those boards that support Micropython's RTC.memory, this class provides easy access
+    API for storing and retrieving data from RTC memory. RTC memory is essentially a contiguous
     array of data stored in battery-backed RAM that can persist across reboots. However, it is not
     non-volatile, so it will reset after a hard power cycle.
 
@@ -37,7 +38,7 @@ class BackupRAM():
     | Meta Data (8 bytes) | Element 1 | Element 2 | ... | Element X |
     -----------------------------------------------------------------
 
-    The first 8 bytes of sleep_memory are reserved to hold the BackupRAM's meta data:
+    The first 8 bytes of RTC memory are reserved to hold the BackupRAM's meta data:
       * free index - marking next available location/index in memory.
       * number of elements already stored in BackupRAM
 
@@ -57,6 +58,8 @@ class BackupRAM():
       * Element data - of type 'data type' and of size 'data length'
     """
     def __init__(self, reset: bool = False) -> None:
+        self.rtc = RTC()
+
         if reset:
             self.reset()
 
@@ -66,7 +69,7 @@ class BackupRAM():
         if free_index < ELEMENTS_OFFSET:
             self._set_free_index(ELEMENTS_OFFSET)
 
-        # Build up element name to sleep_memory index lookup table. Uses extra memory to speed up
+        # Build up element name to RTC_memory index lookup table. Uses extra memory to speed up
         # add, get, and set element API.
         self._elements_lut = {}
         index = ELEMENTS_OFFSET
@@ -75,43 +78,6 @@ class BackupRAM():
             size = self._element_get_size(index)
             self._elements_lut[name] = index
             index += size
-
-    def _get_free_index(self) -> int:
-        return self._get_sleep_memory_data(FREE_INDEX_OFFSET, FREE_INDEX_OFFSET + 4, "i")
-
-    def _get_num_elems(self) -> int:
-        return self._get_sleep_memory_data(NUM_ELEMS_OFFSET, NUM_ELEMS_OFFSET + 4, "i")
-
-    def _set_free_index(self, value) -> int:
-        self._set_sleep_memory_data(FREE_INDEX_OFFSET, "i", value)
-
-    def _set_num_elems(self, value) -> int:
-        self._set_sleep_memory_data(NUM_ELEMS_OFFSET, "i", value)
-
-    def _element_get_name_length(self, start_byte: int) -> int:
-        byte_data = bytearray([alarm.sleep_memory[start_byte + ELEMENT_NAME_LEN_OFFSET]])
-        return struct.unpack_from(">B", byte_data, 0)[0]
-
-    def _element_get_data_len(self, start_byte: int) -> int:
-        byte_data = bytearray([alarm.sleep_memory[start_byte + ELEMENT_DATA_LEN_OFFSET]])
-        return struct.unpack_from(">B", byte_data, 0)[0]
-
-    def _element_get_data_type(self, start_byte: int) -> str:
-        byte_data = bytearray([alarm.sleep_memory[start_byte + ELEMENT_DATA_TYPE_OFFSET]])
-        return struct.unpack_from(">s", byte_data, 0)[0].decode()
-
-    def _element_get_name(self, start_byte: int) -> str:
-        name_len = self._element_get_name_length(start_byte)
-        offset = start_byte +\
-            struct.calcsize(ELEMENT_FORMAT[ELEMENT_NAME_LEN_OFFSET]) +\
-            struct.calcsize(ELEMENT_FORMAT[ELEMENT_DATA_LEN_OFFSET]) +\
-            struct.calcsize(ELEMENT_FORMAT[ELEMENT_DATA_TYPE_OFFSET])
-        byte_data = bytearray()
-
-        for i in range(name_len):
-            byte_data.append(alarm.sleep_memory[offset + i])
-
-        return struct.unpack(f">{name_len}s", byte_data)[0].decode()
 
     def _element_get_data(self, start_byte: int):
         name_len = self._element_get_name_length(start_byte)
@@ -125,9 +91,34 @@ class BackupRAM():
         byte_data = bytearray()
 
         for i in range(data_len):
-            byte_data.append(alarm.sleep_memory[offset + i])
+            byte_data.append(self.rtc[offset + i])
 
         return struct.unpack(f">{data_type}", byte_data)[0]
+
+    def _element_get_data_len(self, start_byte: int) -> int:
+        byte_data = bytearray([self.rtc[start_byte + ELEMENT_DATA_LEN_OFFSET]])
+        return struct.unpack_from(">B", byte_data, 0)[0]
+
+    def _element_get_data_type(self, start_byte: int) -> str:
+        byte_data = bytearray([self.rtc[start_byte + ELEMENT_DATA_TYPE_OFFSET]])
+        return struct.unpack_from(">s", byte_data, 0)[0].decode()
+
+    def _element_get_name(self, start_byte: int) -> str:
+        name_len = self._element_get_name_length(start_byte)
+        offset = start_byte +\
+            struct.calcsize(ELEMENT_FORMAT[ELEMENT_NAME_LEN_OFFSET]) +\
+            struct.calcsize(ELEMENT_FORMAT[ELEMENT_DATA_LEN_OFFSET]) +\
+            struct.calcsize(ELEMENT_FORMAT[ELEMENT_DATA_TYPE_OFFSET])
+        byte_data = bytearray()
+
+        for i in range(name_len):
+            byte_data.append(self.rtc[offset + i])
+
+        return struct.unpack(f">{name_len}s", byte_data)[0].decode()
+
+    def _element_get_name_length(self, start_byte: int) -> int:
+        byte_data = bytearray([self.rtc[start_byte + ELEMENT_NAME_LEN_OFFSET]])
+        return struct.unpack_from(">B", byte_data, 0)[0]
 
     def _element_get_size(self, start_byte: int) -> int:
         name_len = self._element_get_name_length(start_byte)
@@ -139,18 +130,30 @@ class BackupRAM():
             data_len
         return size
 
-    def _get_sleep_memory_data(self, start_byte: int, end_byte: int, data_type: str):
+    def _get_free_index(self) -> int:
+        return self._get_rtc_memory_data(FREE_INDEX_OFFSET, FREE_INDEX_OFFSET + 4, "i")
+
+    def _get_num_elems(self) -> int:
+        return self._get_rtc_memory_data(NUM_ELEMS_OFFSET, NUM_ELEMS_OFFSET + 4, "i")
+
+    def _get_rtc_memory_data(self, start_byte: int, end_byte: int, data_type: str):
         # sleep_memory doesn't support slicing, so have to iterate
         byte_data = bytearray()
         for i in range(start_byte, end_byte):
-            byte_data.append(alarm.sleep_memory[i])
+            byte_data.append(self.rtc[i])
 
         return struct.unpack(f">{data_type}", byte_data)[0]
 
-    def _set_sleep_memory_data(self, start_byte: int, data_type: str, data):
+    def _set_free_index(self, value) -> int:
+        self._set_rtc_memory_data(FREE_INDEX_OFFSET, "i", value)
+
+    def _set_num_elems(self, value) -> int:
+        self._set_rtc_memory_data(NUM_ELEMS_OFFSET, "i", value)
+
+    def _set_rtc_memory_data(self, start_byte: int, data_type: str, data):
         byte_data = struct.pack(f">{data_type}", data)
         for i, byte in enumerate(byte_data):
-            alarm.sleep_memory[start_byte + i] = byte
+            self.rtc[start_byte + i] = byte
 
     def add_element(self, name: str, data_type: str, data) -> None:
         """Adds a new name/data element to backup RAM.
@@ -170,12 +173,12 @@ class BackupRAM():
             data
         )
 
-        # Append element to next available index in sleep_memory bytearray
+        # Append element to next available index in rtc bytearray
         index = self._get_free_index()
         num_elements = self._get_num_elems()
         self._elements_lut[name] = index
-        for bite in packed_data:
-            alarm.sleep_memory[index] = bite
+        for byte in packed_data:
+            self.rtc[index] = byte
             index += 1
 
         # Update free index and num elements
@@ -205,8 +208,8 @@ class BackupRAM():
     def reset(self):
         """Reset backup RAM. All existing data will be lost."""
         print("Resetting nv memory...")
-        for i in range(len(alarm.sleep_memory)):
-            alarm.sleep_memory[i] = 0
+        for i in range(len(self.rtc)):
+            self.rtc[i] = 0
 
         self._set_free_index(ELEMENTS_OFFSET)
         self._set_num_elems(0)
@@ -234,4 +237,4 @@ class BackupRAM():
 
         # Update element in memory
         for i, byte in enumerate(packed_data):
-            alarm.sleep_memory[start_byte + i] = byte
+            self.rtc[start_byte + i] = byte
