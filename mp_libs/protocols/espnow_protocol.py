@@ -56,7 +56,7 @@ class EspnowProtocol(InterfaceProtocol):
 
         # Create a wifi instance just to enable the station interface, not used otherwise
         self.wifi = WifiProtocol(ssid=None, password=None, hostname=hostname, channel=channel)
-        self.wifi.disconnect()
+        self.wifi.disconnect(wait=False)
 
         self.epn = espnow.ESPNow()
         self.epn.active(True)

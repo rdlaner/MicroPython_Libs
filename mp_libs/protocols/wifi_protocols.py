@@ -120,7 +120,7 @@ class WifiProtocol(InterfaceProtocol):
         while not func():
             if time.time() >= timeout_time:
                 raise RuntimeError("noop")
-            time.sleep(0.1)
+            time.sleep_ms(10)
 
     @property
     def hostname(self):
@@ -152,11 +152,12 @@ class WifiProtocol(InterfaceProtocol):
         logger.info("Disconnecting wifi...")
         self._sta.disconnect()
 
-        try:
-            self._wait_for(lambda: not self._sta.isconnected())
-        except RuntimeError:
-            logger.error("Timeout trying to disconnect Wifi")
-            return False
+        if kwargs.get("wait", True):
+            try:
+                self._wait_for(lambda: not self._sta.isconnected())
+            except RuntimeError:
+                logger.error("Timeout trying to disconnect Wifi")
+                return False
 
         return True
 
