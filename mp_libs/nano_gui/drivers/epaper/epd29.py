@@ -279,3 +279,19 @@ class EPD(framebuf.FrameBuffer):
         cmd(b'\x82', b'\x00')
         # POWER_OFF. User code should pull ENA low to power down the display.
         cmd(b'\x02')
+
+    def status(self, msg="") -> int:
+        """Get display status.
+
+        Args:
+            msg (str, optional): Optional message to log along with status. Defaults to "".
+
+        Returns:
+            int: Value of status register.
+        """
+        msg = "Status:" if not msg else msg
+        status = self._command_and_read(b'\x71')
+        logger.debug(f"{msg}")
+        logger.debug(f"Display status: {hex(status)}")
+
+        return status
