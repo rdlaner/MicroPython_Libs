@@ -16,6 +16,7 @@
 
 # Physical pixels are 296w 128h. However the driver views the display as 128w * 296h with the
 # Adfruit code transposing the axes.
+# pylint: disable=pointless-string-statement
 
 # Standard imports
 import framebuf
@@ -32,6 +33,15 @@ try:
     from config import config
 except ImportError:
     config = {"logging_level": logging.INFO}
+
+# Constants
+STATUS_BIT_BUSY_N = const(1 << 0)
+STATUS_BIT_POF = const(1 << 1)
+STATUS_BIT_PON = const(1 << 2)
+STATUS_BIT_DATA_FLAG = const(1 << 3)
+STATUS_BIT_I2C_BUSY_N = const(1 << 4)
+STATUS_BIT_I2C_ERR = const(1 << 5)
+STATUS_BIT_PTL_FLAG = const(1 << 6)
 
 # Globals
 logger = logging.getLogger("epd29")
@@ -259,6 +269,24 @@ class EPD(framebuf.FrameBuffer):
         cmd(b'\x11')  # Data stop
         sleep_us(20)  # Allow for data coming back: currently ignore this
         cmd(b'\x12')  # DISPLAY_REFRESH
+
+        status = self.status("Status after refresh...")
+        if (status & STATUS_BIT_DATA_FLAG) or (status & STATUS_BIT_I2C_BUSY_N == 0) or (status & STATUS_BIT_I2C_ERR):
+            """
+            Strange error that I don't really know why it happens. Sometimes attempting to update
+            the display with the show() function results in nothing being updated on the display.
+            When that happens, I found that a change in the display's status flag. When this issue
+            happens, one or more of these status bits always is set.
+            So, adding a check for it here and a re-initialization of the display to mitigate.
+            Just re-initializing the display did not seem to resolve this issue when it occurs, but
+            putting the display to sleep and then powering it back up and initializing it, aka
+            turning it off and on again, does resolve this issue.
+            """
+            logger.error(f"Unexpected error with display. Sleeping and then re-initializing. Status: {status}")
+            self.sleep()
+            sleep_ms(5)
+            self.init()
+
         # 258ms to get here on Pyboard D
         # Checking with scope, busy goes low now. For 4.9s.
         if not self.demo_mode:
