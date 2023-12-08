@@ -31,10 +31,6 @@ TZ_OFFSET_PACIFIC = const(-8)
 # Globals
 logger = logging.getLogger("network")
 logger.setLevel(config["logging_level"])
-stream_handler = logging.StreamHandler()
-stream_handler.setLevel(config["logging_level"])
-stream_handler.setFormatter(logging.Formatter("%(mono)d %(name)s-%(levelname)s:%(message)s"))
-logger.addHandler(stream_handler)
 
 # TODO: Switch from umqtt to mqtt_as
 

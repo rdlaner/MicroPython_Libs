@@ -24,10 +24,6 @@ except ImportError:
 # Globals
 logger = logging.getLogger("espnow-protocol")
 logger.setLevel(config["logging_level"])
-stream_handler = logging.StreamHandler()
-stream_handler.setLevel(config["logging_level"])
-stream_handler.setFormatter(logging.Formatter("%(mono)d %(name)s-%(levelname)s:%(message)s"))
-logger.addHandler(stream_handler)
 
 # TODO: Metrics don't persist for espnow when using deep sleep mode...
 # TODO: Add retry attempts to espnow send?

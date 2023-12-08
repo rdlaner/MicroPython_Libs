@@ -18,10 +18,6 @@ except ImportError:
 # Globals
 logger = logging.getLogger("sleep")
 logger.setLevel(config["logging_level"])
-stream_handler = logging.StreamHandler()
-stream_handler.setLevel(config["logging_level"])
-stream_handler.setFormatter(logging.Formatter("%(mono)d %(name)s-%(levelname)s:%(message)s"))
-logger.addHandler(stream_handler)
 
 
 class ResetCause:
@@ -63,6 +59,7 @@ def deep_sleep(sleep_time_sec: float, is_serial_connected: "Callable", is_esp32:
         if is_esp32:
             soft_reset()
     else:
+        logging.shutdown()
         sleep_time_msec = int(sleep_time_sec * 1000)
         deepsleep(sleep_time_msec)
 

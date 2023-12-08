@@ -31,10 +31,6 @@ SERIAL_PACKET_META_DATA_SIZE_BYTES = SERIAL_PACKET_HDR_SIZE_BYTES + SERIAL_PACKE
 # Globals
 logger = logging.getLogger("serial-protocols")
 logger.setLevel(config["logging_level"])
-stream_handler = logging.StreamHandler()
-stream_handler.setLevel(config["logging_level"])
-stream_handler.setFormatter(logging.Formatter("%(mono)d %(name)s-%(levelname)s:%(message)s"))
-logger.addHandler(stream_handler)
 SerialPacketHeader = namedtuple("SerialPacketHeader",
                                 ("delim",
                                  "msg_id",

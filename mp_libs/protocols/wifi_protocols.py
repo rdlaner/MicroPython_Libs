@@ -25,10 +25,6 @@ except ImportError:
 # Globals
 logger = logging.getLogger("wifi-protocols")
 logger.setLevel(config["logging_level"])
-stream_handler = logging.StreamHandler()
-stream_handler.setLevel(config["logging_level"])
-stream_handler.setFormatter(logging.Formatter("%(mono)d %(name)s-%(levelname)s:%(message)s"))
-logger.addHandler(stream_handler)
 
 # TODO: Wifi protocol only supports station, consider adding support for AP
 # TODO: Add support for using a static IP address w/ wifi. This should help with connection times.

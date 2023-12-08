@@ -23,7 +23,7 @@ _level_dict = {
 
 _loggers = {}
 _stream = sys.stderr
-_default_fmt = "%(levelname)s:%(name)s:%(message)s"
+_default_fmt = "%(mono)d %(name)s-%(levelname)s:%(message)s"
 _default_datefmt = "%Y-%m-%d %H:%M:%S"
 
 
@@ -129,10 +129,13 @@ class Logger:
                     args = args[0]
                 msg = msg % args
             self.record.set(self.name, level, msg)
-            handlers = self.handlers
-            if not handlers:
-                handlers = getLogger().handlers
-            for h in handlers:
+
+            root_handlers = getLogger().handlers
+            for h in root_handlers:
+                h.emit(self.record)
+
+            local_handlers = self.handlers
+            for h in local_handlers:
                 h.emit(self.record)
 
     def debug(self, msg, *args):
@@ -248,6 +251,12 @@ def basicConfig(
 
         logger.setLevel(level)
         logger.addHandler(handler)
+
+
+# Add root logger if not already
+if "root" not in _loggers:
+    _loggers["root"] = Logger("root")
+    basicConfig()
 
 
 if hasattr(sys, "atexit"):

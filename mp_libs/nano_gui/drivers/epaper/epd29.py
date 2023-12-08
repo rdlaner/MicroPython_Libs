@@ -17,11 +17,25 @@
 # Physical pixels are 296w 128h. However the driver views the display as 128w * 296h with the
 # Adfruit code transposing the axes.
 
+# Standard imports
 import framebuf
 import uasyncio as asyncio
 from micropython import const
 from time import sleep_ms, sleep_us, ticks_ms, ticks_diff
+
+# Third party imports
+from mp_libs import logging
 from mp_libs.nano_gui.drivers.boolpalette import BoolPalette
+
+# Local imports
+try:
+    from config import config
+except ImportError:
+    config = {"logging_level": logging.INFO}
+
+# Globals
+logger = logging.getLogger("epd29")
+logger.setLevel(config["logging_level"])
 
 
 def asyncio_running():
@@ -121,7 +135,7 @@ class EPD(framebuf.FrameBuffer):
         # https://github.com/adafruit/Adafruit_CircuitPython_IL0373/issues/17
         cmd(b'\x82', b'\x12')  # Set Vcom to -1.0V
         sleep_ms(50)
-        print('Init Done.')
+        logger.info("Init done.")
 
     # For use in synchronous code: blocking wait on ready state.
     def wait_until_ready(self):
