@@ -119,7 +119,7 @@ class EPD(framebuf.FrameBuffer):
         # Booster soft start. Matches datasheet.
         cmd(b'\x06', b'\x17\x17\x17')
         cmd(b'\x04')  # Power on
-        sleep_ms(200)
+        self.wait_until_ready()
         # Iss https://github.com/adafruit/Adafruit_CircuitPython_IL0373/issues/16
         cmd(b'\x00', b'\x9f')
         # CDI: As used by Adafruit. Datasheet is confusing on this.
@@ -139,9 +139,8 @@ class EPD(framebuf.FrameBuffer):
 
     # For use in synchronous code: blocking wait on ready state.
     def wait_until_ready(self):
-        sleep_ms(50)
         while not self.ready():
-            sleep_ms(100)
+            sleep_ms(5)
 
     # Return immediate status. Pin state: 0 == busy.
     def ready(self):
