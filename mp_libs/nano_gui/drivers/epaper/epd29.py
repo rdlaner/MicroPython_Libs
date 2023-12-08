@@ -57,8 +57,10 @@ class EPD(framebuf.FrameBuffer):
         return int((r > 127) or (g > 127) or (b > 127))
 
     # Discard asyn: autodetect
-    def __init__(self, spi, cs, dc, rst, busy, landscape=True, asyn=False):
-        self._spi = spi
+    def __init__(self, create_spi, cs, dc, rst, busy, landscape=True, asyn=False, create_soft_spi=None):
+        self._create_spi = create_spi
+        self._create_soft_spi = create_soft_spi
+        self._spi = create_spi()
         self._cs = cs  # Pins
         self._dc = dc
         self._rst = rst  # Active low.
@@ -82,6 +84,31 @@ class EPD(framebuf.FrameBuffer):
         mode = framebuf.MONO_VLSB if landscape else framebuf.MONO_HLSB
         self.palette = BoolPalette(mode)
         super().__init__(self._buffer, self.width, self.height, mode)
+
+    def _command_and_read(self, command) -> int:
+        soft_spi = None
+        rx_data = bytearray(1)
+
+        self._cs(0)
+        self._dc(0)
+        self._spi.write(command)
+        self._dc(1)
+        if self._create_soft_spi:
+            # Using soft spi to bang out clock cycles without putting data on MOSI
+            self._spi.deinit()
+            sleep_ms(10)
+            soft_spi = self._create_soft_spi()
+            soft_spi.readinto(rx_data)
+        else:
+            self._spi.readinto(rx_data)
+        self._cs(1)
+
+        # Cleanup
+        if soft_spi:
+            soft_spi.deinit()
+            self._spi = self._create_spi()
+
+        return rx_data[0]
 
     def _command(self, command, data=None, end=True):
         self._cs(0)
