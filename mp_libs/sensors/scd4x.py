@@ -57,6 +57,7 @@ _SCD4X_SETPRESSURE = const(0xE000)
 _SCD4X_PERSISTSETTINGS = const(0x3615)
 _SCD4X_GETASCE = const(0x2313)
 _SCD4X_SETASCE = const(0x2416)
+_SCD4X_SINGLE_SHOT = const(0x219D)
 
 
 class SCD4X:
@@ -257,6 +258,10 @@ class SCD4X:
         for more details.
         """
         self._send_command(_SCD4X_STARTLOWPOWERPERIODICMEASUREMENT)
+
+    def single_shot(self) -> None:
+        """Start a single shot measurement"""
+        self._send_command(_SCD4X_SINGLE_SHOT)
 
     def persist_settings(self) -> None:
         """Save temperature offset, altitude offset, and selfcal enable settings to EEPROM"""
