@@ -90,6 +90,7 @@ class EPD(framebuf.FrameBuffer):
         self.demo_mode = False
 
         self._buffer = bytearray(self.height * self.width // 8)
+        self._tx_buffer = bytearray(len(self._buffer))
         self._mvb = memoryview(self._buffer)
         mode = framebuf.MONO_VLSB if landscape else framebuf.MONO_HLSB
         self.palette = BoolPalette(mode)
@@ -230,7 +231,7 @@ class EPD(framebuf.FrameBuffer):
         self.complete.set()
 
     # draw the current frame memory.
-    def show(self, buf1=bytearray(1)):
+    def show(self, buf1=None):
         if asyncio_running():
             if self._as_busy:
                 raise RuntimeError('Cannot refresh: display is busy.')
@@ -240,13 +241,16 @@ class EPD(framebuf.FrameBuffer):
             asyncio.create_task(self._as_show())
             return
 
+        tx_buf = self._tx_buffer
         mvb = self._mvb
         cmd = self._command
         dat = self._data
         # DATA_START_TRANSMISSION_2 Datasheet P31 indicates this sets
         # busy pin low (True) and that it stays logically True until
         # refresh is complete. In my testing this doesn't happen.
-        cmd(b'\x13', end=False)
+
+        # Build up buffer of tx data and then send in one burst. This improves perf dramaticaly
+        # taking it from a ~260msec operation to ~40msec.
         if self._lsc:  # Landscape mode
             wid = self.width
             tbc = self.height // 8  # Vertical bytes per column
@@ -255,9 +259,7 @@ class EPD(framebuf.FrameBuffer):
             vbc = 0  # Current vertical byte count
             hpc = 0  # Horizontal pixel count
             for i in range(len(mvb)):
-                end = i == (len(mvb) - 1)
-                buf1[0] = ~mvb[idx]
-                dat(buf1, end=end)
+                tx_buf[i] = ~mvb[idx]
                 idx -= wid
                 vbc += 1
                 vbc %= tbc
@@ -266,12 +268,11 @@ class EPD(framebuf.FrameBuffer):
                     idx = iidx + hpc
         else:
             for i, b in enumerate(mvb):
-                end = i == (len(mvb) - 1)
-                buf1[0] = ~b
-                dat(buf1, end=end)
+                tx_buf[i] = ~b
 
+        cmd(b'\x13', end=False)  # Data start
+        dat(tx_buf, end=True)
         cmd(b'\x11')  # Data stop
-        sleep_us(20)  # Allow for data coming back: currently ignore this
         cmd(b'\x12')  # DISPLAY_REFRESH
 
         # 258ms to get here on Pyboard D
