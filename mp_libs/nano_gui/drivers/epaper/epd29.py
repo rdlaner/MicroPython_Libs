@@ -197,8 +197,9 @@ class EPD(framebuf.FrameBuffer):
             vbc = 0  # Current vertical byte count
             hpc = 0  # Horizontal pixel count
             for i in range(len(mvb)):
+                end = i == (len(mvb) - 1)
                 buf1[0] = ~mvb[idx]
-                dat(buf1)
+                dat(buf1, end=end)
                 idx -= wid
                 vbc += 1
                 vbc %= tbc
@@ -210,8 +211,9 @@ class EPD(framebuf.FrameBuffer):
                     t = ticks_ms()
         else:
             for i, b in enumerate(mvb):
+                end = i == (len(mvb) - 1)
                 buf1[0] = ~b
-                dat(buf1)
+                dat(buf1, end=end)
                 if not (i & 0x0f) and (ticks_diff(ticks_ms(), t) > _MAX_BLOCK):
                     await asyncio.sleep_ms(0)
                     t = ticks_ms()
@@ -252,9 +254,10 @@ class EPD(framebuf.FrameBuffer):
             idx = iidx  # Index into framebuf
             vbc = 0  # Current vertical byte count
             hpc = 0  # Horizontal pixel count
-            for _ in range(len(mvb)):
+            for i in range(len(mvb)):
+                end = i == (len(mvb) - 1)
                 buf1[0] = ~mvb[idx]
-                dat(buf1)
+                dat(buf1, end=end)
                 idx -= wid
                 vbc += 1
                 vbc %= tbc
@@ -262,30 +265,14 @@ class EPD(framebuf.FrameBuffer):
                     hpc += 1
                     idx = iidx + hpc
         else:
-            for b in mvb:
+            for i, b in enumerate(mvb):
+                end = i == (len(mvb) - 1)
                 buf1[0] = ~b
-                dat(buf1)
+                dat(buf1, end=end)
 
         cmd(b'\x11')  # Data stop
         sleep_us(20)  # Allow for data coming back: currently ignore this
         cmd(b'\x12')  # DISPLAY_REFRESH
-
-        status = self.status("Status after refresh...")
-        if (status & STATUS_BIT_DATA_FLAG) or (status & STATUS_BIT_I2C_BUSY_N == 0) or (status & STATUS_BIT_I2C_ERR):
-            """
-            Strange error that I don't really know why it happens. Sometimes attempting to update
-            the display with the show() function results in nothing being updated on the display.
-            When that happens, I found that a change in the display's status flag. When this issue
-            happens, one or more of these status bits always is set.
-            So, adding a check for it here and a re-initialization of the display to mitigate.
-            Just re-initializing the display did not seem to resolve this issue when it occurs, but
-            putting the display to sleep and then powering it back up and initializing it, aka
-            turning it off and on again, does resolve this issue.
-            """
-            logger.error(f"Unexpected error with display. Sleeping and then re-initializing. Status: {status}")
-            self.sleep()
-            sleep_ms(5)
-            self.init()
 
         # 258ms to get here on Pyboard D
         # Checking with scope, busy goes low now. For 4.9s.
