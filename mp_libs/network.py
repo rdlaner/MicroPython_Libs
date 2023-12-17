@@ -10,8 +10,8 @@ from micropython import const
 
 # Third party imports
 from mp_libs import logging
+from mp_libs.adafruit_minimqtt import adafruit_minimqtt as MQTT
 from mp_libs.protocols import InterfaceProtocol
-from mp_libs.protocols.adafruit_minimqtt import adafruit_minimqtt as MQTT
 from mp_libs.protocols.min_iot_protocol import MinIotProtocol
 from mp_libs.protocols.serial_protocols import SerialProtocol
 from mp_libs.protocols.espnow_protocol import EspnowProtocol
