@@ -116,7 +116,7 @@ class _FakeSSLSocket:
         try:
             return self._socket.connect(address, self._mode)
         except RuntimeError as error:
-            raise OSError(errno.ENOMEM) from error
+            raise OSError(errno.ENOMEM)
 
 
 class _FakeSSLContext:
@@ -340,7 +340,7 @@ class MQTT:
             self.logger.warning(
                 f"Failed to create socket for host {addr_info[0]} and port {addr_info[1]}"
             )
-            raise TemporaryError from exc
+            raise TemporaryError
 
         if self._is_ssl:
             sock = self._ssl_context.wrap_socket(sock, server_hostname=host)
@@ -353,7 +353,7 @@ class MQTT:
             sock.close()
             self.logger.warning(f"Failed to allocate memory for connect: {exc}")
             # Do not consider this for back-off.
-            raise TemporaryError from exc
+            raise TemporaryError
         except OSError as exc:
             sock.close()
             last_exception = exc
@@ -455,7 +455,7 @@ class MQTT:
         except KeyError:
             raise KeyError(
                 "MQTT topic callback not added with add_topic_callback."
-            ) from None
+            )
 
     @property
     def on_message(self):
@@ -550,7 +550,7 @@ class MQTT:
         else:
             exc_msg = "Connect failure"
         if last_exception:
-            raise MMQTTException(exc_msg) from last_exception
+            raise MMQTTException(exc_msg)
 
         raise MMQTTException(exc_msg)
 
@@ -1057,7 +1057,7 @@ class MQTT:
                 if error.errno in (errno.ETIMEDOUT, errno.EAGAIN):
                     # raised by a socket timeout if 0 bytes were present
                     return None
-                raise MMQTTException from error
+                raise MMQTTException
 
         if res in [None, b"", b"\x00"]:
             # If we get here, it means that there is nothing to be received
