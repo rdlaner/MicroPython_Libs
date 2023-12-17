@@ -5,13 +5,13 @@
 import binascii
 import machine
 import ntptime
-import ssl
+import socket
 from micropython import const
 
 # Third party imports
-from umqtt.simple import MQTTClient as MQTT
 from mp_libs import logging
 from mp_libs.protocols import InterfaceProtocol
+from mp_libs.protocols.adafruit_minimqtt import adafruit_minimqtt as MQTT
 from mp_libs.protocols.min_iot_protocol import MinIotProtocol
 from mp_libs.protocols.serial_protocols import SerialProtocol
 from mp_libs.protocols.espnow_protocol import EspnowProtocol
@@ -27,12 +27,6 @@ from secrets import secrets
 # Constants
 DEFAULT_MTU_SIZE_BYTES = const(250)
 TZ_OFFSET_PACIFIC = const(-8)
-
-# Globals
-logger = logging.getLogger("network")
-logger.setLevel(config["logging_level"])
-
-# TODO: Switch from umqtt to mqtt_as
 
 
 class Network(InterfaceProtocol):
@@ -142,22 +136,24 @@ class Network(InterfaceProtocol):
         """
         client_id = id_prefix + binascii.hexlify(machine.unique_id()).decode("utf-8")
 
-        client = MQTT(
+        client = MQTT.MQTT(
             client_id=client_id,
-            server=secrets["mqtt_broker"],
+            broker=secrets["mqtt_broker"],
             port=secrets["mqtt_port"],
-            user=secrets["mqtt_username"],
+            username=secrets["mqtt_username"],
             password=secrets["mqtt_password"],
-            keepalive=keep_alive_sec if keep_alive_sec else config["keep_alive_sec"],
+            socket_pool=socket,
+            keep_alive=keep_alive_sec if keep_alive_sec else config["keep_alive_sec"],
+            connect_retries=config["connect_retries"],
+            recv_timeout=config["recv_timeout_sec"]
         )
-        # client.on_connect = on_connect_cb
-        # client.on_disconnect = on_disconnect_cb
-        # client.on_publish = on_publish_cb
-        # client.on_subscribe = on_sub_cb
-        # client.on_unsubscribe = on_unsub_cb
-        # client.on_message = on_message_cb
-        # client.enable_logger(logging, log_level=config["logging_level"])
-        client.set_callback(on_message_cb)
+        client.on_connect = on_connect_cb
+        client.on_disconnect = on_disconnect_cb
+        client.on_publish = on_publish_cb
+        client.on_subscribe = on_sub_cb
+        client.on_unsubscribe = on_unsub_cb
+        client.on_message = on_message_cb
+        client.enable_logger(logging, log_level=config["logging_level"], logger_name="mqtt")
 
         wifi_protocol = WifiProtocol(secrets["ssid"], secrets["password"], client_id, config["wifi_channel"])
         mqtt_protocol = MqttProtocol(wifi_protocol, client)

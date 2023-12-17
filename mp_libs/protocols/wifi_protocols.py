@@ -10,9 +10,9 @@ import time
 from micropython import const
 
 # Third party imports
-from umqtt.simple import MQTTClient as MQTT
 from mp_libs import logging
 from mp_libs.protocols import InterfaceProtocol
+from mp_libs.protocols.adafruit_minimqtt import adafruit_minimqtt as MQTT
 
 # Local imports
 try:
@@ -28,8 +28,6 @@ logger.setLevel(config["logging_level"])
 
 # TODO: Wifi protocol only supports station, consider adding support for AP
 # TODO: Add support for using a static IP address w/ wifi. This should help with connection times.
-# TODO: Try porting adafruit's mqtt library since micropython's sucks. https://github.com/adafruit/Adafruit_CircuitPython_MiniMQTT/blob/main/adafruit_minimqtt/adafruit_minimqtt.py
-# TODO: Switch from umqtt to mqtt_as
 
 
 class WifiProtocol(InterfaceProtocol):
@@ -201,7 +199,6 @@ class MqttProtocol(InterfaceProtocol):
         super().__init__()
         self._transport = transport
         self._mqtt_client = mqtt_client
-        self._is_connected = False
 
         self._transport.disconnect(force=True)
 
@@ -227,19 +224,16 @@ class MqttProtocol(InterfaceProtocol):
         logger.info("Connecting mqtt...")
         force = kwargs.get("force", False)
 
-        if not self.is_connected() or force is True:
+        if not self._mqtt_client.is_connected() or force is True:
             try:
                 self._mqtt_client.connect()
-            except (OSError, ValueError, RuntimeError) as exc:
+            except (OSError, ValueError, RuntimeError, MQTT.MMQTTException) as exc:
                 logger.exception("Failed to connect MQTT!", exc_info=exc)
                 success = False
             else:
                 logger.info("MQTT is connected!")
         else:
             logger.info("MQTT is already connected")
-
-        if success:
-            self._is_connected = True
 
         return success
 
@@ -257,10 +251,10 @@ class MqttProtocol(InterfaceProtocol):
         force = kwargs.get("force", False)
 
         # Disconnect MQTT first
-        if self.is_connected() or force is True:
+        if self._mqtt_client.is_connected() or force is True:
             try:
                 self._mqtt_client.disconnect()
-            except (OSError, ValueError, RuntimeError) as exc:
+            except (OSError, ValueError, RuntimeError, MQTT.MMQTTException) as exc:
                 logger.exception("Failed to disconnect MQTT!", exc_info=exc)
                 success = False
             else:
@@ -270,13 +264,12 @@ class MqttProtocol(InterfaceProtocol):
 
         # Disconnect transport next
         if success:
-            self._is_connected = False
             success = self._transport.disconnect()
 
         return success
 
     def is_connected(self) -> bool:
-        return self._is_connected and self._mqtt_client.sock is not None
+        return self._mqtt_client.is_connected()
 
     def receive(self, rxed_data: list, **kwargs) -> bool:
         """Exercises the MQTT loop function.
@@ -300,8 +293,8 @@ class MqttProtocol(InterfaceProtocol):
         recover = kwargs.get("recover", False)
 
         try:
-            self._mqtt_client.check_msg()
-        except (ValueError, RuntimeError, OSError) as exc:
+            self._mqtt_client.loop()
+        except (ValueError, RuntimeError, OSError, MQTT.MMQTTException) as exc:
             logger.exception("MQTT loop failure", exc_info=exc)
             data_available = False
             if recover:
@@ -358,7 +351,7 @@ class MqttProtocol(InterfaceProtocol):
 
         try:
             self._mqtt_client.publish(topic, msg, retain=retain, qos=qos)
-        except (ValueError, RuntimeError, OSError) as exc:
+        except (ValueError, RuntimeError, OSError, MQTT.MMQTTException) as exc:
             logger.exception("MQTT send failed.", exc_info=exc)
             success = False
             if recover:
