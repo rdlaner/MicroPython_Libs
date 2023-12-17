@@ -82,10 +82,6 @@ _fake_context = None  # pylint: disable=invalid-name
 class MMQTTException(Exception):
     """MiniMQTT Exception class."""
 
-    # pylint: disable=unnecessary-pass
-    # pass
-
-
 class TemporaryError(Exception):
     """Temporary error class used for handling reconnects."""
 
@@ -139,7 +135,6 @@ class NullLogger:
     # pylint: disable=unused-argument
     def nothing(self, msg: str, *args) -> None:
         """no action"""
-        pass
 
     def __init__(self) -> None:
         for log_level in ["debug", "info", "warning", "error", "critical"]:
@@ -169,7 +164,7 @@ class MQTT:
         This works with all callbacks but the "on_message" and those added via add_topic_callback();
         for those, to get access to the user_data use the 'user_data' member of the MQTT object
         passed as 1st argument.
-    :param bool use_imprecise_time: on boards without time.monotonic_ns() one has to set
+    :param bool use_imprecise_time: on boards without time.time_ns() one has to set
         this to True in order to operate correctly over more than 24 days or so
 
     """
@@ -202,14 +197,14 @@ class MQTT:
 
         self.use_monotonic_ns = False
         try:
-            time.monotonic_ns()
+            time.time_ns()
             self.use_monotonic_ns = True
         except AttributeError:
             if use_imprecise_time:
                 self.use_monotonic_ns = False
             else:
                 raise MMQTTException(  # pylint: disable=raise-missing-from
-                    "time.monotonic_ns() is not available. "
+                    "time.time_ns() is not available. "
                     "Will use imprecise time however only if the"
                     "use_imprecise_time argument is set to True."
                 )
@@ -296,9 +291,9 @@ class MQTT:
         not being able to operate if running contiguously for more than 24 days or so.
         """
         if self.use_monotonic_ns:
-            return time.monotonic_ns() / 1000000000
+            return time.time_ns() / 1000000000
 
-        return time.monotonic()
+        return time.time()
 
     # pylint: disable=too-many-branches
     def _get_connect_socket(self, host: str, port: int, *, timeout: int = 1):
