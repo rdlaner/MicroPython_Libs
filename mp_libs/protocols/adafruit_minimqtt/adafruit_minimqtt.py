@@ -261,7 +261,7 @@ class MQTT:
         else:
             # assign a unique client_id
             time_int = int(self.get_monotonic_time() * 100) % 1000
-            self.client_id = f"cpy{randint(0, time_int)}{randint(0, 99)}"
+            self.client_id = f"mpy{randint(0, time_int)}{randint(0, 99)}"
             # generated client_id's enforce spec.'s length rules
             if len(self.client_id.encode("utf-8")) > 23 or not self.client_id:
                 raise ValueError("MQTT Client ID must be between 1 and 23 bytes")
@@ -342,15 +342,13 @@ class MQTT:
             )
             raise TemporaryError from exc
 
-        connect_host = addr_info[-1][0]
         if self._is_ssl:
             sock = self._ssl_context.wrap_socket(sock, server_hostname=host)
-            connect_host = host
         sock.settimeout(timeout)
 
         last_exception = None
         try:
-            sock.connect((connect_host, port))
+            sock.connect(addr_info[-1])
         except MemoryError as exc:
             sock.close()
             self.logger.warning(f"Failed to allocate memory for connect: {exc}")
