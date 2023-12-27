@@ -1,82 +1,143 @@
-"""Time Support Library
-
-TODO: Update to use datetime module
-"""
+"""Time Support Library"""
 # Standard imports
-import time
-from micropython import const
-
-# Third party imports
-
-# Local imports
-
-# Constants
-TIME_FMT_STR = "%d:%02d:%02d"
-DATA_FMT_STR = "%d/%d/%d"
-UTC_TO_PACIFIC = const(-8)
+from datetime import datetime, timedelta, tzinfo
 
 
-def get_fmt_time(epoch_time: int = None) -> str:
-    """Get formatted time string
+class USTimeZone(tzinfo):
+    DSTSTART = datetime(1, 3, 8, 2)
+    DSTEND = datetime(1, 11, 1, 2)
+    ZERO = timedelta(0)
+    HOUR = timedelta(hours=1)
+    SECOND = timedelta(seconds=1)
 
-    Args:
-        epoch_time (int, optional): Create format str from this epoch timestamp.
-                                    If None, will use current time.
-    Returns:
-        str: Formatted time string
-    """
-    if epoch_time:
-        now = time.localtime(epoch_time)
+    def __init__(self, hours, reprname, stdname, dstname):
+        self.stdoffset = timedelta(hours=hours)
+        self.reprname = reprname
+        self.stdname = stdname
+        self.dstname = dstname
+
+    def __repr__(self):
+        return self.reprname
+
+    @staticmethod
+    def first_sunday_on_or_after(dt):
+        days_to_go = 6 - dt.weekday()
+        if days_to_go:
+            dt += timedelta(days_to_go)
+        return dt
+
+    @staticmethod
+    def us_dst_range(year):
+        start = USTimeZone.first_sunday_on_or_after(USTimeZone.DSTSTART.replace(year=year))
+        end = USTimeZone.first_sunday_on_or_after(USTimeZone.DSTEND.replace(year=year))
+        return start, end
+
+    def tzname(self, dt):
+        if self.dst(dt):
+            return self.dstname
+        return self.stdname
+
+    def utcoffset(self, dt):
+        return self.stdoffset + self.dst(dt)
+
+    def dst(self, dt):
+        if dt is None or dt.tzinfo is None:
+            return self.ZERO
+        assert dt.tzinfo is self
+        start, end = USTimeZone.us_dst_range(dt.year)
+        # Can't compare naive to aware objects, so strip the timezone from
+        # dt first.
+        dt = dt.replace(tzinfo=None)
+        if start + self.HOUR <= dt < end - self.HOUR:
+            # DST is in effect.
+            return self.HOUR
+        if end - self.HOUR <= dt < end:
+            # Fold (an ambiguous hour): use dt.fold to disambiguate.
+            return self.ZERO if dt.fold else self.HOUR
+        if start <= dt < start + self.HOUR:
+            # Gap (a non-existent hour): reverse the fold rule.
+            return self.HOUR if dt.fold else self.ZERO
+        # DST is off.
+        return self.ZERO
+
+    def fromutc(self, dt):
+        assert dt.tzinfo is self
+        start, end = USTimeZone.us_dst_range(dt.year)
+        start = start.replace(tzinfo=self)
+        end = end.replace(tzinfo=self)
+        std_time = dt + self.stdoffset
+        dst_time = std_time + self.HOUR
+        if end <= dst_time < end + self.HOUR:
+            # Repeated hour
+            return std_time.replace(fold=1)
+        if std_time < start or dst_time >= end:
+            # Standard time
+            return std_time
+        if start <= std_time < end - self.HOUR:
+            # Daylight saving time
+            return dst_time
+
+
+# US timezone implementations
+tz_eastern = USTimeZone(-5, "Eastern", "EST", "EDT")
+tz_central = USTimeZone(-6, "Central", "CST", "CDT")
+tz_mountain = USTimeZone(-7, "Mountain", "MST", "MDT")
+tz_pacific = USTimeZone(-8, "Pacific", "PST", "PDT")
+
+
+def _get_time_tuple(timestamp: int = None, tz: tzinfo = None) -> tuple:
+    if not tz:
+        tz = tz_pacific
+
+    if timestamp:
+        now = datetime.fromtimestamp(timestamp, tz=tz)
     else:
-        now = time.localtime()
+        now = datetime.now(tz)
 
-    pacific_hour = now[3] + UTC_TO_PACIFIC
-    if pacific_hour <= 0:
-        pacific_hour += 12
-
-    return TIME_FMT_STR % (pacific_hour, now[4], now[5])
+    return (now.year, now.month, now.day, now.hour, now.minute, now.second, now.weekday())
 
 
-def get_fmt_date(epoch_time: int = None) -> str:
+def get_fmt_date(timestamp: int = None, tz: tzinfo = None) -> str:
     """Get formatted date string
 
     Args:
-        epoch_time (int, optional): Create format str from this epoch timestamp.
-                                    If None, will use current date.
+        timestamp (int, optional): Create format str from this epoch timestamp.
+                                   If None, will use current datetime.
+        tz (tzinfo, optional): Timezone. Defaults to tz_pacific if None is passed.
+
     Returns:
         str: Formatted date string
     """
-    if epoch_time:
-        now = time.localtime(epoch_time)
-    else:
-        now = time.localtime()
+    data_fmt_str = "%d/%d/%d"
+    now_tuple = _get_time_tuple(timestamp, tz)
+    return data_fmt_str % (now_tuple[1], now_tuple[2], now_tuple[0])
 
-    months_ending_in_31 = [1, 3, 5, 7, 8, 10, 12]
-    months_ending_in_30 = [4, 6, 9, 11]
-    pacific_hour = now[3] + UTC_TO_PACIFIC
-    pacific_day = now[2]
-    pacific_month = now[1]
-    pacific_year = now[0]
 
-    # Handle hour rollback
-    if pacific_hour <= 0:
-        pacific_day -= 1
-        pacific_hour += 12
+def get_fmt_datetime(timestamp: int = None, tz: tzinfo = None) -> str:
+    """Get formatted datetime string
 
-    # Handle day rollback
-    if pacific_day <= 0:
-        pacific_month -= 1
+    Args:
+        timestamp (int, optional): Create format str from this epoch timestamp.
+                                   If None, will use current time.
+        tz (tzinfo, optional): Timezone. Defaults to tz_pacific if None is passed.
 
-        if now[1] in months_ending_in_31:
-            pacific_day = 31
-        elif now[1] in months_ending_in_30:
-            pacific_day = 30
-        else:
-            pacific_day = 28
+    Returns:
+        str: Formatted datetime string
+    """
+    return f"{get_fmt_date(timestamp, tz)} - {get_fmt_time(timestamp, tz)}"
 
-    # Handle month rollback
-    if pacific_month <= 0:
-        pacific_month = 12
-        pacific_year -= 1
 
-    return DATA_FMT_STR % (pacific_month, pacific_day, pacific_year)
+def get_fmt_time(timestamp: int = None, tz: tzinfo = None) -> str:
+    """Get formatted time string
+
+    Args:
+        timestamp (int, optional): Create format str from this epoch timestamp.
+                                   If None, will use current time.
+        tz (tzinfo, optional): Timezone. Defaults to tz_pacific if None is passed.
+
+    Returns:
+        str: Formatted time string
+    """
+    time_fmt_str = "%d:%02d:%02d"
+    now_tuple = _get_time_tuple(timestamp, tz)
+    return time_fmt_str % (now_tuple[3], now_tuple[4], now_tuple[5])
