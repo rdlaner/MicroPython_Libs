@@ -28,6 +28,10 @@ from secrets import secrets
 DEFAULT_MTU_SIZE_BYTES = const(250)
 TZ_OFFSET_PACIFIC = const(-8)
 
+# Globals
+logger = logging.getLogger("network")
+logger.setLevel(config["logging_level"])
+
 
 class Network(InterfaceProtocol):
     """Generic network class for utilizing any protocol that adheres to the InterfaceProtocol.
@@ -48,8 +52,13 @@ class Network(InterfaceProtocol):
         return self.transport.is_connected()
 
     def ntp_time_sync(self) -> bool:
-        # TODO: Right now this only works w/ wifi...
-        # ntptime.settime()
+        """Performs time sync if the underlaying transport has a wifi connection"""
+        if isinstance(self.transport, (MqttProtocol, WifiProtocol)):
+            try:
+                ntptime.settime()
+            except OSError as exc:
+                logger.exception("Time sync failed", exc_info=exc)
+                return False
 
         return True
 
