@@ -195,13 +195,13 @@ class MQTT:
         self._backwards_compatible_sock = False
         self._use_binary_mode = use_binary_mode
 
-        self.use_monotonic_ns = False
+        self.use_monotonic_us = False
         try:
-            time.time_ns()
-            self.use_monotonic_ns = True
+            time.ticks_us()
+            self.use_monotonic_us = True
         except AttributeError:
             if use_imprecise_time:
-                self.use_monotonic_ns = False
+                self.use_monotonic_us = False
             else:
                 raise MMQTTException(  # pylint: disable=raise-missing-from
                     "time.time_ns() is not available. "
@@ -290,8 +290,8 @@ class MQTT:
         this might result in imprecise time, that will result in the library
         not being able to operate if running contiguously for more than 24 days or so.
         """
-        if self.use_monotonic_ns:
-            return time.time_ns() / 1000000000
+        if self.use_monotonic_us:
+            return time.ticks_us() / 1_000_000
 
         return time.time()
 
