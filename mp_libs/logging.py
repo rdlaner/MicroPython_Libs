@@ -28,7 +28,7 @@ _level_dict = {
 
 _loggers = {}
 _stream = sys.stderr
-_default_fmt = "%(mono)d %(name)s-%(levelname)s:%(message)s"
+_default_fmt = "%(mono)d %(levelname)s-%(name)s:%(message)s"
 _default_datefmt = "%Y-%m-%d %H:%M:%S"
 
 
