@@ -17,6 +17,11 @@ from micropython import const
 # Constants
 DEF_RAM_OFFSET = const(0)
 DEF_LIST_OFFSET = const(400)
+MAGIC_NUM_OFFSET = const(0)
+FREE_INDEX_OFFSET = const(4)
+NUM_ELEMS_OFFSET = const(8)
+ELEMENTS_OFFSET = const(12)
+MAGIC_NUM = const(0xFEEDFACE)
 ELEMENT_BYTE_ORDER = ">"
 ELEMENT_FORMAT = "BBs%ds%s"  # name_len, data_len, data_type, name, data type str
 ELEMENT_FORMAT_STR = ELEMENT_BYTE_ORDER + ELEMENT_FORMAT
@@ -40,12 +45,13 @@ class BackupRAM():
 
     BackupRAM's data structure looks like this in memory:
     -----------------------------------------------------------------
-    | Meta Data (8 bytes) | Element 1 | Element 2 | ... | Element X |
+    | Meta Data (12 bytes) | Element 1 | Element 2 | ... | Element X |
     -----------------------------------------------------------------
 
     The first 8 bytes of RTC memory are reserved to hold the BackupRAM's meta data:
-      * free index - marking next available location/index in memory.
-      * number of elements already stored in BackupRAM
+      * (4 byte) magic number - magic number used to validate data
+      * (4 bytes) free index - marking next available location/index in memory.
+      * (4 bytes) number of elements already stored in BackupRAM
 
     The rest of BackupRAM is composed of a series of elements that get added whenever a user adds
     data. Each element is composed of the following attributes and in this order:
@@ -67,7 +73,11 @@ class BackupRAM():
         self.size = size
         self.rtc = RTC()
 
-        if reset:
+        valid_magic = self._check_magic_num()
+        if not valid_magic:
+            logger.warning("Invalid magic number. Corrupted backup ram.")
+
+        if reset or not valid_magic:
             self.reset()
 
         # Initialize meta data
@@ -85,6 +95,9 @@ class BackupRAM():
             size = self._element_get_size(index)
             self._elements_lut[name] = index
             index += size
+
+    def _check_magic_num(self) -> bool:
+        return self._get_magic() == MAGIC_NUM
 
     def _element_get_data(self, start_byte: int):
         name_len = self._element_get_name_length(start_byte)
@@ -143,6 +156,9 @@ class BackupRAM():
     def _get_free_index(self) -> int:
         return self._get_rtc_memory_data(self.offset + FREE_INDEX_OFFSET, self.offset + FREE_INDEX_OFFSET + 4, "I")
 
+    def _get_magic(self) -> int:
+        return self._get_rtc_memory_data(self.offset + MAGIC_NUM_OFFSET, self.offset + MAGIC_NUM_OFFSET + 4, "I")
+
     def _get_num_elems(self) -> int:
         return self._get_rtc_memory_data(self.offset + NUM_ELEMS_OFFSET, self.offset + NUM_ELEMS_OFFSET + 4, "I")
 
@@ -156,6 +172,9 @@ class BackupRAM():
 
     def _set_free_index(self, value) -> None:
         self._set_rtc_memory_data(self.offset + FREE_INDEX_OFFSET, "I", value)
+
+    def _set_magic(self) -> None:
+        self._set_rtc_memory_data(self.offset + MAGIC_NUM_OFFSET, "I", MAGIC_NUM)
 
     def _set_num_elems(self, value) -> None:
         self._set_rtc_memory_data(self.offset + NUM_ELEMS_OFFSET, "I", value)
@@ -238,6 +257,7 @@ class BackupRAM():
 
     def print_elements(self) -> None:
         """Print contents of backup RAM."""
+        print(f"Magic: {self._get_magic()}")
         print(f"Free index: {self._get_free_index()}")
         print(f"Num elems: {self._get_num_elems()}")
 
@@ -250,6 +270,7 @@ class BackupRAM():
             for i in range(self.offset + ELEMENTS_OFFSET, index):
                 self.rtc[i] = 0
 
+        self._set_magic()
         self._set_free_index(self.offset + ELEMENTS_OFFSET)
         self._set_num_elems(0)
         self._elements_lut = OrderedDict()
