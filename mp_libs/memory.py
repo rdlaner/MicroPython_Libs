@@ -1,6 +1,6 @@
 """Memory Support Library
 
-# TODO: Use logger instead of print statements
+# TODO: Update rtc memory to support slicing
 """
 # pylint: disable=c-extension-no-member
 # pyright: reportGeneralTypeIssues=false
@@ -11,8 +11,13 @@ from machine import RTC
 from micropython import const
 
 # Third party imports
+from mp_libs import logging
 
 # Local imports
+try:
+    from config import config
+except ImportError:
+    config = {"logging_level": logging.INFO}
 
 # Constants
 DEF_RAM_OFFSET = const(0)
@@ -33,6 +38,8 @@ ELEMENT_MAX_DATA_LEN = const(255)
 ELEMENT_MAX_NAME_LEN = const(255)
 
 # Globals
+logger = logging.getLogger("memory")
+logger.setLevel(config["logging_level"])
 
 
 class BackupRAM():
@@ -85,6 +92,9 @@ class BackupRAM():
         num_elements = self._get_num_elems()
         if free_index < self.offset + ELEMENTS_OFFSET:
             self._set_free_index(self.offset + ELEMENTS_OFFSET)
+
+        logger.debug(f"free_index: {free_index}")
+        logger.debug(f"num_elements: {num_elements}")
 
         # Build up element name to RTC_memory index lookup table. Uses extra memory to speed up
         # add, get, and set element API.
