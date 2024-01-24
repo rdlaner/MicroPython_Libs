@@ -194,6 +194,13 @@ class BackupRAM():
         for i, byte in enumerate(byte_data):
             self.rtc[start_byte + i] = byte
 
+    @staticmethod
+    def reset_rtc() -> None:
+        """Reset all of rtc memory"""
+        rtc = RTC()
+        for i in range(len(rtc)):
+            rtc[i] = 0
+
     def add_element(self, name: str, data_type: str, data) -> None:
         """Adds a new name/data element to backup RAM.
 
