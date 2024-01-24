@@ -6,6 +6,7 @@
 # pyright: reportGeneralTypeIssues=false
 # Standard imports
 import struct
+from collections import OrderedDict
 from machine import RTC
 from micropython import const
 
@@ -14,9 +15,8 @@ from micropython import const
 # Local imports
 
 # Constants
-FREE_INDEX_OFFSET = const(0)
-NUM_ELEMS_OFFSET = const(4)
-ELEMENTS_OFFSET = const(8)
+DEF_RAM_OFFSET = const(0)
+DEF_LIST_OFFSET = const(400)
 ELEMENT_BYTE_ORDER = ">"
 ELEMENT_FORMAT = "BBs%ds%s"  # name_len, data_len, data_type, name, data type str
 ELEMENT_FORMAT_STR = ELEMENT_BYTE_ORDER + ELEMENT_FORMAT
@@ -24,6 +24,8 @@ ELEMENT_NAME_LEN_OFFSET = const(0)
 ELEMENT_DATA_LEN_OFFSET = const(1)
 ELEMENT_DATA_TYPE_OFFSET = const(2)
 ELEMENT_NAME_OFFSET = const(3)
+ELEMENT_MAX_DATA_LEN = const(255)
+ELEMENT_MAX_NAME_LEN = const(255)
 
 # Globals
 
@@ -60,7 +62,9 @@ class BackupRAM():
       * Element name - string of length 'name length'
       * Element data - of type 'data type' and of size 'data length'
     """
-    def __init__(self, reset: bool = False) -> None:
+    def __init__(self, offset: int = DEF_RAM_OFFSET, size: int = None, reset: bool = False) -> None:
+        self.offset = offset
+        self.size = size
         self.rtc = RTC()
 
         if reset:
@@ -69,13 +73,13 @@ class BackupRAM():
         # Initialize meta data
         free_index = self._get_free_index()
         num_elements = self._get_num_elems()
-        if free_index < ELEMENTS_OFFSET:
-            self._set_free_index(ELEMENTS_OFFSET)
+        if free_index < self.offset + ELEMENTS_OFFSET:
+            self._set_free_index(self.offset + ELEMENTS_OFFSET)
 
         # Build up element name to RTC_memory index lookup table. Uses extra memory to speed up
         # add, get, and set element API.
-        self._elements_lut = {}
-        index = ELEMENTS_OFFSET
+        self._elements_lut = OrderedDict()
+        index = self.offset + ELEMENTS_OFFSET
         for _ in range(num_elements):
             name = self._element_get_name(index)
             size = self._element_get_size(index)
@@ -95,6 +99,9 @@ class BackupRAM():
 
         for i in range(data_len):
             byte_data.append(self.rtc[offset + i])
+
+        if data_type == "s":
+            data_type = f"{data_len}s"
 
         return struct.unpack(f">{data_type}", byte_data)[0]
 
@@ -134,26 +141,26 @@ class BackupRAM():
         return size
 
     def _get_free_index(self) -> int:
-        return self._get_rtc_memory_data(FREE_INDEX_OFFSET, FREE_INDEX_OFFSET + 4, "i")
+        return self._get_rtc_memory_data(self.offset + FREE_INDEX_OFFSET, self.offset + FREE_INDEX_OFFSET + 4, "I")
 
     def _get_num_elems(self) -> int:
-        return self._get_rtc_memory_data(NUM_ELEMS_OFFSET, NUM_ELEMS_OFFSET + 4, "i")
+        return self._get_rtc_memory_data(self.offset + NUM_ELEMS_OFFSET, self.offset + NUM_ELEMS_OFFSET + 4, "I")
 
     def _get_rtc_memory_data(self, start_byte: int, end_byte: int, data_type: str):
-        # sleep_memory doesn't support slicing, so have to iterate
+        # rtc memory doesn't support slicing, so have to iterate
         byte_data = bytearray()
         for i in range(start_byte, end_byte):
             byte_data.append(self.rtc[i])
 
         return struct.unpack(f">{data_type}", byte_data)[0]
 
-    def _set_free_index(self, value) -> int:
-        self._set_rtc_memory_data(FREE_INDEX_OFFSET, "i", value)
+    def _set_free_index(self, value) -> None:
+        self._set_rtc_memory_data(self.offset + FREE_INDEX_OFFSET, "I", value)
 
-    def _set_num_elems(self, value) -> int:
-        self._set_rtc_memory_data(NUM_ELEMS_OFFSET, "i", value)
+    def _set_num_elems(self, value) -> None:
+        self._set_rtc_memory_data(self.offset + NUM_ELEMS_OFFSET, "I", value)
 
-    def _set_rtc_memory_data(self, start_byte: int, data_type: str, data):
+    def _set_rtc_memory_data(self, start_byte: int, data_type: str, data) -> None:
         byte_data = struct.pack(f">{data_type}", data)
         for i, byte in enumerate(byte_data):
             self.rtc[start_byte + i] = byte
@@ -166,19 +173,49 @@ class BackupRAM():
             data_type (str): Data type as defined by struct format characters.
             data : Data of type `data_type`.
         """
+        # Handle string data type
+        if "s" in data_type:
+            if len(data) > ELEMENT_MAX_DATA_LEN:
+                data = data[0:ELEMENT_MAX_DATA_LEN]
+            data = data.encode()
+            data_type = "s"
+            data_type_fmt = f"{len(data)}s"
+        else:
+            data_type_fmt = data_type
+
+        # Ensure name isn't too long
+        if len(name) > ELEMENT_MAX_NAME_LEN:
+            name = name[0:ELEMENT_MAX_NAME_LEN]
+
         # Pack up the element: name_len, data_len, data_type, name, data
         packed_data = struct.pack(
-            ELEMENT_FORMAT_STR % (len(name), data_type),
+            ELEMENT_FORMAT_STR % (len(name), data_type_fmt),
             len(name),
-            struct.calcsize(data_type),
+            struct.calcsize(data_type_fmt),
             data_type.encode(),
             name.encode(),
             data
         )
 
-        # Append element to next available index in rtc bytearray
+        # Make sure there is enough room for the new element
         index = self._get_free_index()
-        num_elements = self._get_num_elems()
+        if self.size:
+            if index + len(packed_data) >= self.offset + self.size:
+                msg = (
+                    "Attempted to write beyond size of backup ram instance\n" +
+                    f"Max size: {self.size} bytes\n" +
+                    f"Overran by: {(index + len(packed_data) - (self.offset + self.size))} bytes"
+                )
+                raise RuntimeError(msg)
+        if index + len(packed_data) >= self.rtc.MEM_SIZE:
+            msg = (
+                "Attempted to write beyond the max size of rtc.memory\n" +
+                f"Max size: {self.rtc.MEM_SIZE}\n" +
+                f"Overran by: {(index + len(packed_data) - self.rtc.MEM_SIZE)}"
+            )
+            raise RuntimeError(msg)
+
+        # Append element to next available index in rtc bytearray
         self._elements_lut[name] = index
         for byte in packed_data:
             self.rtc[index] = byte
@@ -186,7 +223,7 @@ class BackupRAM():
 
         # Update free index and num elements
         self._set_free_index(index)
-        self._set_num_elems(num_elements + 1)
+        self._set_num_elems(self._get_num_elems() + 1)
 
     def get_element(self, name: str):
         """Return the element's data from backup RAM.
@@ -210,13 +247,12 @@ class BackupRAM():
 
     def reset(self):
         """Reset backup RAM. All existing data will be lost."""
-        print("Resetting nv memory...")
-        for i in range(len(self.rtc)):
-            self.rtc[i] = 0
+            for i in range(self.offset + ELEMENTS_OFFSET, index):
+                self.rtc[i] = 0
 
-        self._set_free_index(ELEMENTS_OFFSET)
+        self._set_free_index(self.offset + ELEMENTS_OFFSET)
         self._set_num_elems(0)
-        self._elements_lut = {}
+        self._elements_lut = OrderedDict()
 
     def set_element(self, name: str, data):
         """Write the element's data to backup RAM.
@@ -228,11 +264,27 @@ class BackupRAM():
         start_byte = self._elements_lut[name]
         data_type = self._element_get_data_type(start_byte)
 
+        if "s" in data_type:
+            data_len = self._element_get_data_len(start_byte)
+            if len(data) != data_len:
+                msg = (
+                    "String data length must match that of original string\n" +
+                    f"Original len: {data_len}\n" +
+                    f"New len: {len(data)}"
+                )
+                raise RuntimeError(msg)
+
+            data = data.encode()
+            data_type = "s"
+            data_type_fmt = f"{len(data)}s"
+        else:
+            data_type_fmt = data_type
+
         # Rebuild packed struct w/ new data
         packed_data = struct.pack(
-            ELEMENT_FORMAT_STR % (len(name), data_type),
+            ELEMENT_FORMAT_STR % (len(name), data_type_fmt),
             len(name),
-            struct.calcsize(data_type),
+            struct.calcsize(data_type_fmt),
             data_type.encode(),
             name.encode(),
             data
@@ -241,3 +293,48 @@ class BackupRAM():
         # Update element in memory
         for i, byte in enumerate(packed_data):
             self.rtc[start_byte + i] = byte
+
+
+class BackupList(BackupRAM):
+    """
+    NOTE: Don't use logger in this class since BackupList can be used as a logger handler
+    """
+    def __init__(self, offset: int = DEF_LIST_OFFSET, reset: bool = False) -> None:
+        super().__init__(offset, reset)
+        self._list = []
+
+        for index in self._elements_lut.values():
+            self._list.append(self._element_get_data(index).decode())
+
+    def __bool__(self):
+        return len(self._list) > 0
+
+    def __getitem__(self, index):
+        return self._list[index]
+
+    def __len__(self):
+        return len(self._list)
+
+    def __setitem__(self, index, value):
+        name = f"l{index}"
+        if name not in self._elements_lut:
+            raise RuntimeError(f"Invalid index: {index}")
+
+        self.set_element(name, value)
+        self._list[index] = value
+
+    def append(self, value):
+        if isinstance(value, int):
+            fmt_char = "i"
+        elif isinstance(value, str):
+            fmt_char = "s"
+        else:
+            raise RuntimeError(f"Unsupported value type for {value}: {type(value)}")
+
+        index = self._get_num_elems() + 1
+        self.add_element(f"l{index}", fmt_char, value)
+        self._list.append(value)
+
+    def clear(self):
+        self._list.clear()
+        self.reset()
