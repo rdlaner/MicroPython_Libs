@@ -265,8 +265,16 @@ class BackupRAM():
         for name in self._elements_lut:
             print(f"{name}: {self.get_element(name)}")
 
-    def reset(self):
+    def reset(self, clear: bool = False):
         """Reset backup RAM. All existing data will be lost."""
+        logger.warning(f"Resetting nvram memory at offset: {self.offset}...")
+
+        if clear:
+            index = self.offset + ELEMENTS_OFFSET
+            for _ in range(self._get_num_elems()):
+                size = self._element_get_size(index)
+                index += size
+
             for i in range(self.offset + ELEMENTS_OFFSET, index):
                 self.rtc[i] = 0
 
