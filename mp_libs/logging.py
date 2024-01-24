@@ -1,3 +1,8 @@
+"""
+logging.py
+
+# TODO: Update BufferHandler to support fixed size buffer
+"""
 from micropython import const
 import io
 import sys
@@ -47,6 +52,9 @@ class Handler:
     def close(self):
         pass
 
+    def emit(self, record):
+        pass
+
     def setLevel(self, level):
         self.level = level
 
@@ -78,6 +86,15 @@ class FileHandler(StreamHandler):
     def close(self):
         super().close()
         self.stream.close()
+
+
+class BufferHandler(Handler):
+    def __init__(self, buffer: list = None):
+        self.buffer = buffer if buffer is not None else []
+
+    def emit(self, record):
+        if record.levelno >= self.level:
+            self.buffer.append(self.format(record))
 
 
 class Formatter:
