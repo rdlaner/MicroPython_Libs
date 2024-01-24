@@ -1,4 +1,7 @@
-"""Network Support Library"""
+"""Network Support Library
+
+# TODO: Don't rely on config module like this. Do something better.
+"""
 # pylint: disable=no-name-in-module, import-error, disable=no-member, c-extension-no-member
 # pyright: reportGeneralTypeIssues=false
 # Standard imports
@@ -154,7 +157,8 @@ class Network(InterfaceProtocol):
             socket_pool=socket,
             keep_alive=keep_alive_sec if keep_alive_sec else config["keep_alive_sec"],
             connect_retries=config["connect_retries"],
-            recv_timeout=config["recv_timeout_sec"]
+            recv_timeout=config["recv_timeout_sec"],
+            socket_timeout=config["socket_timeout_sec"]
         )
         client.on_connect = on_connect_cb
         client.on_disconnect = on_disconnect_cb
