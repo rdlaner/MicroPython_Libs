@@ -1,7 +1,6 @@
 """Async Queue
 
-Based on Peter Hinch's queue.py:
-https://github.com/peterhinch/micropython-async/blob/master/v3/primitives/queue.py
+Based on Python's asyncio.queues.Queue implementation.
 """
 import asyncio
 
@@ -9,10 +8,20 @@ import asyncio
 class AsyncQueue:
     """Async queue that supports both awaitable/blocking and non-blocking get and put API's."""
     def __init__(self, maxsize: int = 0) -> None:
-        self.maxsize = maxsize
+        self._maxsize = maxsize
         self._queue = []
         self._event_put = asyncio.Event()
         self._event_get = asyncio.Event()
+
+    def __repr__(self):
+        return f'<{type(self).__name__} at {id(self):#x} {self._format()}>'
+
+    def __str__(self):
+        return f'<{type(self).__name__} {self._format()}>'
+
+    def _format(self):
+        result = f"maxsize={self._maxsize!r} _queue={list(self._queue)!r}"
+        return result
 
     def _get(self):
         self._event_get.set()  # Schedule all tasks waiting on this event
@@ -41,7 +50,7 @@ class AsyncQueue:
         Returns:
             bool: True if there are maxsize number of items in the queue, False otherwise.
         """
-        return self.maxsize > 0 and self.size() >= self.maxsize
+        return self._maxsize > 0 and self.qsize() >= self._maxsize
 
     async def get(self):
         """Blocking: Get next item from queue.
@@ -101,6 +110,11 @@ class AsyncQueue:
 
         return failed
 
-    def size(self) -> int:
+    @property
+    def maxsize(self) -> int:
+        """Return max number of items allowed in the queue"""
+        return self._maxsize
+
+    def qsize(self) -> int:
         """Return number of items in the queue"""
         return len(self._queue)
