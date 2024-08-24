@@ -201,13 +201,14 @@ class BackupRAM():
         for i in range(len(rtc)):
             rtc[i] = 0
 
-    def add_element(self, name: str, data_type: str, data) -> None:
+    def add_element(self, name: str, data_type: str, data, clear_if_full: bool = False) -> None:
         """Adds a new name/data element to backup RAM.
 
         Args:
             name (str): Name of new element. Used as a key for lookup.
             data_type (str): Data type as defined by struct format characters.
             data : Data of type `data_type`.
+            clear_if_full (bool): Clear memory if not enough room for new element.
         """
         # Handle string data type
         if "s" in data_type:
@@ -235,21 +236,36 @@ class BackupRAM():
 
         # Make sure there is enough room for the new element
         index = self._get_free_index()
-        if self.size:
-            if index + len(packed_data) >= self.offset + self.size:
-                msg = (
-                    "Attempted to write beyond size of backup ram instance\n" +
-                    f"Max size: {self.size} bytes\n" +
-                    f"Overran by: {(index + len(packed_data) - (self.offset + self.size))} bytes"
-                )
+        if self.size and (index + len(packed_data) >= self.offset + self.size):
+            msg = (
+                "Attempted to write beyond size of backup ram instance\n" +
+                f"Offset: {self.offset}" +
+                f"Max size: {self.size} bytes\n" +
+                f"Overran by: {(index + len(packed_data) - (self.offset + self.size))} bytes"
+            )
+
+            if clear_if_full:
+                self.reset(clear=True, verbose=False)
+                logger.warning(msg)
+                logger.warning("Cleared memeory")
+                index = self._get_free_index()
+            else:
                 raise RuntimeError(msg)
         if index + len(packed_data) >= self.rtc.MEM_SIZE:
             msg = (
                 "Attempted to write beyond the max size of rtc.memory\n" +
+                f"Offset: {self.offset}" +
                 f"Max size: {self.rtc.MEM_SIZE}\n" +
                 f"Overran by: {(index + len(packed_data) - self.rtc.MEM_SIZE)}"
             )
-            raise RuntimeError(msg)
+
+            if clear_if_full:
+                self.reset(clear=True, verbose=False)
+                logger.error(msg)
+                logger.error("Cleared memeory")
+                index = self._get_free_index()
+            else:
+                raise RuntimeError(msg)
 
         # Append element to next available index in rtc bytearray
         self._elements_lut[name] = index
@@ -282,9 +298,10 @@ class BackupRAM():
         for name in self._elements_lut:
             print(f"{name}: {self.get_element(name)}")
 
-    def reset(self, clear: bool = False):
+    def reset(self, clear: bool = False, verbose: bool = True):
         """Reset backup RAM. All existing data will be lost."""
-        logger.warning(f"Resetting nvram memory at offset: {self.offset}...")
+        if verbose:
+            logger.warning(f"Resetting nvram memory at offset: {self.offset}...")
 
         if clear:
             index = self.offset + ELEMENTS_OFFSET
@@ -378,9 +395,12 @@ class BackupList(BackupRAM):
             raise RuntimeError(f"Unsupported value type for {value}: {type(value)}")
 
         index = self._get_num_elems() + 1
-        self.add_element(f"l{index}", fmt_char, value)
+        self.add_element(f"l{index}", fmt_char, value, clear_if_full=True)
         self._list.append(value)
 
     def clear(self):
         self._list.clear()
         self.reset()
+
+    def copy(self) -> list:
+        return self._list.copy()
