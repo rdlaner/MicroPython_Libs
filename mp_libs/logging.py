@@ -147,12 +147,12 @@ class Logger:
                 msg = msg % args
             self.record.set(self.name, level, msg)
 
-            root_handlers = getLogger().handlers
-            for h in root_handlers:
+            # Call any root handlers
+            for h in getLogger().handlers:
                 h.emit(self.record)
 
-            local_handlers = self.handlers
-            for h in local_handlers:
+            # Call any local handlers
+            for h in self.handlers:
                 h.emit(self.record)
 
     def debug(self, msg, *args):
@@ -243,7 +243,7 @@ def basicConfig(
     filemode="a",
     format=None,
     datefmt=None,
-    level=WARNING,
+    level=NOTSET,
     stream=None,
     encoding="UTF-8",
     force=False,
