@@ -134,7 +134,12 @@ class BackupRAM():
         if data_type == "s":
             data_type = f"{data_len}s"
 
-        return struct.unpack(f">{data_type}", byte_data)[0]
+        result = struct.unpack(f">{data_type}", byte_data)[0]
+
+        if "s" in data_type:
+            result = result.decode("utf-8")
+
+        return result
 
     def _element_get_data_len(self, start_byte: int) -> int:
         byte_data = bytearray([self.rtc[start_byte + ELEMENT_DATA_LEN_OFFSET]])
