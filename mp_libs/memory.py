@@ -24,8 +24,8 @@ DEF_RAM_OFFSET = const(0)
 DEF_LIST_OFFSET = const(400)
 MAGIC_NUM_OFFSET = const(0)
 FREE_INDEX_OFFSET = const(4)
-NUM_ELEMS_OFFSET = const(8)
-ELEMENTS_OFFSET = const(12)
+NUM_ELEMS_OFFSET = const(6)
+ELEMENTS_OFFSET = const(8)
 MAGIC_NUM = const(0xFEEDFACE)
 ELEMENT_BYTE_ORDER = ">"
 ELEMENT_FORMAT = "BBs%ds%s"  # name_len, data_len, data_type, name, data type str
@@ -52,13 +52,13 @@ class BackupRAM():
 
     BackupRAM's data structure looks like this in memory:
     -----------------------------------------------------------------
-    | Meta Data (12 bytes) | Element 1 | Element 2 | ... | Element X |
+    | Meta Data (8 bytes) | Element 1 | Element 2 | ... | Element X |
     -----------------------------------------------------------------
 
     The first 8 bytes of RTC memory are reserved to hold the BackupRAM's meta data:
       * (4 byte) magic number - magic number used to validate data
-      * (4 bytes) free index - marking next available location/index in memory.
-      * (4 bytes) number of elements already stored in BackupRAM
+      * (2 bytes) free index - marking next available location/index in memory.
+      * (2 bytes) number of elements already stored in BackupRAM
 
     The rest of BackupRAM is composed of a series of elements that get added whenever a user adds
     data. Each element is composed of the following attributes and in this order:
@@ -164,13 +164,13 @@ class BackupRAM():
         return size
 
     def _get_free_index(self) -> int:
-        return self._get_rtc_memory_data(self.offset + FREE_INDEX_OFFSET, self.offset + FREE_INDEX_OFFSET + 4, "I")
+        return self._get_rtc_memory_data(self.offset + FREE_INDEX_OFFSET, self.offset + FREE_INDEX_OFFSET + 2, "H")
 
     def _get_magic(self) -> int:
         return self._get_rtc_memory_data(self.offset + MAGIC_NUM_OFFSET, self.offset + MAGIC_NUM_OFFSET + 4, "I")
 
     def _get_num_elems(self) -> int:
-        return self._get_rtc_memory_data(self.offset + NUM_ELEMS_OFFSET, self.offset + NUM_ELEMS_OFFSET + 4, "I")
+        return self._get_rtc_memory_data(self.offset + NUM_ELEMS_OFFSET, self.offset + NUM_ELEMS_OFFSET + 2, "H")
 
     def _get_rtc_memory_data(self, start_byte: int, end_byte: int, data_type: str):
         # rtc memory doesn't support slicing, so have to iterate
@@ -181,13 +181,13 @@ class BackupRAM():
         return struct.unpack(f">{data_type}", byte_data)[0]
 
     def _set_free_index(self, value) -> None:
-        self._set_rtc_memory_data(self.offset + FREE_INDEX_OFFSET, "I", value)
+        self._set_rtc_memory_data(self.offset + FREE_INDEX_OFFSET, "H", value)
 
     def _set_magic(self) -> None:
         self._set_rtc_memory_data(self.offset + MAGIC_NUM_OFFSET, "I", MAGIC_NUM)
 
     def _set_num_elems(self, value) -> None:
-        self._set_rtc_memory_data(self.offset + NUM_ELEMS_OFFSET, "I", value)
+        self._set_rtc_memory_data(self.offset + NUM_ELEMS_OFFSET, "H", value)
 
     def _set_rtc_memory_data(self, start_byte: int, data_type: str, data) -> None:
         byte_data = struct.pack(f">{data_type}", data)
