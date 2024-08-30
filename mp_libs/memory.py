@@ -1,6 +1,6 @@
 """Memory Support Library
 
-# TODO: Update rtc memory to support slicing
+TODO: Update rtc memory to support slicing
 """
 # pylint: disable=c-extension-no-member
 # pyright: reportGeneralTypeIssues=false
@@ -9,6 +9,10 @@ import struct
 from collections import OrderedDict
 from machine import RTC
 from micropython import const
+try:
+    from typing import Optional
+except ImportError:
+    pass
 
 # Third party imports
 from mp_libs import logging
@@ -20,8 +24,6 @@ except ImportError:
     config = {"logging_level": logging.INFO}
 
 # Constants
-DEF_RAM_OFFSET = const(0)
-DEF_LIST_OFFSET = const(400)
 MAGIC_NUM_OFFSET = const(0)
 FREE_INDEX_OFFSET = const(4)
 NUM_ELEMS_OFFSET = const(6)
@@ -75,7 +77,13 @@ class BackupRAM():
       * Element name - string of length 'name length'
       * Element data - of type 'data type' and of size 'data length'
     """
-    def __init__(self, offset: int = DEF_RAM_OFFSET, size: int = None, reset: bool = False) -> None:
+    def __init__(self, offset: int = 0, size: Optional[int] = None, reset: bool = False) -> None:
+        if size is not None and size <= ELEMENTS_OFFSET:
+            raise MemoryError(f"Given size ({size}) is too small. Must be greater than {ELEMENTS_OFFSET}.")
+
+        if offset >= RTC.MEM_SIZE:
+            raise MemoryError(f"Given offset ({offset}) is too large. Must be less than {RTC.MEM_SIZE}.")
+
         self.offset = offset
         self.size = size
         self.rtc = RTC()
@@ -198,7 +206,7 @@ class BackupRAM():
     def reset_rtc() -> None:
         """Reset all of rtc memory"""
         rtc = RTC()
-        for i in range(len(rtc)):
+        for i in range(len(rtc)):  # pylint: disable=consider-using-enumerate
             rtc[i] = 0
 
     def add_element(self, name: str, data_type: str, data, clear_if_full: bool = False) -> None:
@@ -236,36 +244,36 @@ class BackupRAM():
 
         # Make sure there is enough room for the new element
         index = self._get_free_index()
-        if self.size and (index + len(packed_data) >= self.offset + self.size):
+        if self.size and (index + len(packed_data) > self.offset + self.size):
             msg = (
                 "Attempted to write beyond size of backup ram instance\n" +
-                f"Offset: {self.offset}" +
-                f"Max size: {self.size} bytes\n" +
+                f"Offset: {self.offset}, " +
+                f"Max size: {self.size} bytes, " +
                 f"Overran by: {(index + len(packed_data) - (self.offset + self.size))} bytes"
             )
 
             if clear_if_full:
                 self.reset(clear=True, verbose=False)
                 logger.warning(msg)
-                logger.warning("Cleared memeory")
+                logger.warning("Cleared memory")
                 index = self._get_free_index()
             else:
-                raise RuntimeError(msg)
-        if index + len(packed_data) >= self.rtc.MEM_SIZE:
+                raise MemoryError(msg)
+        if index + len(packed_data) > self.rtc.MEM_SIZE:
             msg = (
                 "Attempted to write beyond the max size of rtc.memory\n" +
-                f"Offset: {self.offset}" +
-                f"Max size: {self.rtc.MEM_SIZE}\n" +
+                f"Offset: {self.offset}, " +
+                f"Max size: {self.rtc.MEM_SIZE}, " +
                 f"Overran by: {(index + len(packed_data) - self.rtc.MEM_SIZE)}"
             )
 
             if clear_if_full:
                 self.reset(clear=True, verbose=False)
-                logger.error(msg)
-                logger.error("Cleared memeory")
+                logger.warning(msg)
+                logger.warning("Cleared memory")
                 index = self._get_free_index()
             else:
-                raise RuntimeError(msg)
+                raise MemoryError(msg)
 
         # Append element to next available index in rtc bytearray
         self._elements_lut[name] = index
@@ -291,6 +299,8 @@ class BackupRAM():
     def print_elements(self) -> None:
         """Print contents of backup RAM."""
         print(f"Magic: {self._get_magic()}")
+        print(f"Offset: {self.offset}")
+        print(f"Size: {self.size}")
         print(f"Free index: {self._get_free_index()}")
         print(f"Num elems: {self._get_num_elems()}")
 
