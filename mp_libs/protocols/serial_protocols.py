@@ -1,5 +1,4 @@
 """Serial Protocol Implementation"""
-# pyright: reportGeneralTypeIssues=false
 # TODO: Could use ctypes Union to reduce SerialPacket header size.
 
 # Standard imports
@@ -161,7 +160,7 @@ class SerialPacket():
         Returns:
             bytes: Serialized bytes object representing this packet instance.
         """
-        return self._serialized_packet
+        return self._serialized_packet  # type: ignore
 
 
 class SerialMessage():
@@ -175,19 +174,14 @@ class SerialMessage():
     """
     msg_id = 0
 
-    def __init__(self, data, mtu_size_bytes: int, msg_id: int = None, direct: bool = True) -> None:
+    def __init__(self, data, mtu_size_bytes: int, msg_id: int = None) -> None:
         """Not intended to be initialized directly. Users should use one of the create classmethods.
 
         Args:
             data (generic): Msg data.
             mtu_size_bytes (int): Max size of each SerialPacket.
             msg_id (int, optional): Msg identifier. If none, will increment from static count.
-            direct (bool): Indicates that this class was directly instantiated. Only classmethods should change this param.
         """
-        if direct:
-            raise SerialMessageException(
-                "SerialMessage does not support direct instantiation. Use factory classmethods.")
-
         self.data = data
         self.mtu_size_bytes = mtu_size_bytes
         self.msg_id = msg_id if msg_id else self._get_and_increment_msg_id()
@@ -206,6 +200,10 @@ class SerialMessage():
             self._iter_idx = 0
             raise StopIteration("noop")
 
+    def __new__(cls, *args, **kwargs):
+        raise SerialMessageException(
+            "SerialMessage does not support direct instantiation. Use factory classmethods.")
+
     def __repr__(self) -> str:
         return "\n".join(str(packet) for packet in self.packets)
 
@@ -215,14 +213,14 @@ class SerialMessage():
 
         return msg_id
 
-    def encode(self) -> str:
+    def encode(self) -> bytes:
         """Return an encoded copy of the SerialMessage's data using "utf-8" encoding.
 
         Raises:
             SerialMessageException: Can't encode if data is None.
 
         Returns:
-            str: Byte string of encoded data.
+            bytes: Byte string of encoded data.
         """
         if self.data is None:
             raise SerialMessageException("Data cannot be None.")
@@ -261,7 +259,8 @@ class SerialMessage():
             data = bytes(data)
 
         # Create new SerialMessage
-        msg = cls(data, mtu_size_bytes, msg_id, direct=False)
+        msg = object.__new__(cls)
+        msg.__init__(data, mtu_size_bytes, msg_id)  # pylint: disable=unnecessary-dunder-call
         msg.packets = list(packets)  # Copies the whole list and not just a reference
 
         return msg
@@ -290,7 +289,8 @@ class SerialMessage():
             raise SerialMessageException("MTU size is too small")
 
         # Initialize a new SerialMessage
-        msg = cls(data, mtu_size_bytes, direct=False)
+        msg = object.__new__(cls)
+        msg.__init__(data, mtu_size_bytes)  # pylint: disable=unnecessary-dunder-call
 
         # Encode data (if appropriate)
         if isinstance(data, (bytearray, bytes)):
