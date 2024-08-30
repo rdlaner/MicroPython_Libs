@@ -4,8 +4,10 @@
 # Standard imports
 import binascii
 import gc
+import io
 import machine
 import network
+import sys
 import time
 from micropython import const
 
@@ -297,11 +299,13 @@ class MqttProtocol(InterfaceProtocol):
         except (ValueError, RuntimeError, OSError, MQTT.MMQTTException) as exc:
             logger.exception("MQTT loop failure", exc_info=exc)
             data_available = False
+            buf = io.StringIO()
+            sys.print_exception(exc, buf)
             if recover:
                 if not self.recover():
-                    raise RuntimeError(f"Failed to recover after MQTT loop failure.\nexc={exc}")
+                    raise RuntimeError(f"Failed to recover after MQTT loop failure.\n{buf.getvalue()}")
             else:
-                raise RuntimeError(f"Did not attempt recovery.\nexc={exc}")
+                raise RuntimeError(f"Did not attempt recovery.\n{buf.getvalue()}")
 
         return data_available
 
@@ -354,11 +358,13 @@ class MqttProtocol(InterfaceProtocol):
         except (ValueError, RuntimeError, OSError, MQTT.MMQTTException) as exc:
             logger.exception("MQTT send failed.", exc_info=exc)
             success = False
+            buf = io.StringIO()
+            sys.print_exception(exc, buf)
             if recover:
                 if not self.recover():
-                    raise RuntimeError(f"Failed to recover after MQTT send failure.\nexc={exc}")
+                    raise RuntimeError(f"Failed to recover after MQTT send failure.\n{buf.getvalue()}")
             else:
-                raise RuntimeError(f"Did not attempt recovery.\nexc={exc}")
+                raise RuntimeError(f"Did not attempt recovery.\n{buf.getvalue()}")
 
         return success
 

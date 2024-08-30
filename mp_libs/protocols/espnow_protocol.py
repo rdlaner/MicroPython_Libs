@@ -4,7 +4,9 @@
 # Standard imports
 import binascii
 import espnow
+import io
 import network
+import sys
 import time
 from micropython import const
 
@@ -133,11 +135,13 @@ class EspnowProtocol(InterfaceProtocol):
                 except (OSError, ValueError) as exc:
                     logger.exception("Failed receiving espnow packet", exc_info=exc)
                     data_available = False
+                    buf = io.StringIO()
+                    sys.print_exception(exc, buf)
                     if recover:
                         if not self.recover():
-                            raise RuntimeError(f"Failed to recover after espnow receive failure.\nexc={exc}")
+                            raise RuntimeError(f"Failed to recover after espnow receive failure.\n{buf.getvalue()}")
                     else:
-                        raise RuntimeError(f"Did not attempt recovery.\nexc={exc}")
+                        raise RuntimeError(f"Did not attempt recovery.\n{buf.getvalue()}")
             else:
                 break
 

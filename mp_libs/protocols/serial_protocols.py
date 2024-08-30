@@ -4,7 +4,9 @@
 
 # Standard imports
 import binascii
+import io
 import struct
+import sys
 from collections import namedtuple
 from math import ceil
 from micropython import const
@@ -128,8 +130,10 @@ class SerialPacket():
         try:
             header = SerialPacketHeader(*struct.unpack(SERIAL_PACKET_HDR_FORMAT_STR, header_data))
         except RuntimeError as exc:
+            buf = io.StringIO()
+            sys.print_exception(exc, buf)
             raise SerialPacketException(
-                f"Failed to deserialize packet header: {header_data}\nexc: {exc}")
+                f"Failed to deserialize packet header: {header_data}\nexc: {buf.getvalue()}")
 
         # Validate header
         if header.delim != SERIAL_PACKET_DELIM:
