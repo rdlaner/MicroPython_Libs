@@ -469,3 +469,45 @@ class BackupList(BackupRAM):
 
         return new_list
 
+
+class BackupDict(BackupRAM):
+    """Dict data structure that uses BackupRAM as its backing data store."""
+    def __init__(self, offset: int = 0, size: Optional[int] = None, reset: bool = False) -> None:
+        super().__init__(offset, size, reset)
+
+    def __bool__(self):
+        return len(self._elements_lut) > 0
+
+    def __contains__(self, key):
+        return key in self._elements_lut
+
+    def __getitem__(self, key):
+        if key not in self._elements_lut:
+            raise KeyError(f"Invalid key: {key}")
+
+        return self.get_element(key)
+
+    def __iter__(self):
+        for key in self._elements_lut.keys():
+            value = self.get_element(key)
+            yield key, value
+
+    def __len__(self):
+        return len(self._elements_lut)
+
+    def __setitem__(self, key, value):
+        if key in self._elements_lut:
+            self.set_element(key, value)
+        else:
+            if isinstance(value, int):
+                data_type = "i"
+            elif isinstance(value, float):
+                data_type = "f"
+            elif isinstance(value, str):
+                data_type = "s"
+            elif isinstance(value, bool):
+                data_type = "B"
+            else:
+                raise TypeError(f"Unsupported type for value: {value}")
+
+            self.add_element(key, data_type, value)
