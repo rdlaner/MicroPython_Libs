@@ -374,48 +374,98 @@ class BackupRAM():
 
 
 class BackupList(BackupRAM):
-    """
+    """List data structure that uses BackupRAM as its backing data store.
+
     NOTE: Don't use logger in this class since BackupList can be used as a logger handler
     """
-    def __init__(self, offset: int = DEF_LIST_OFFSET, reset: bool = False) -> None:
-        super().__init__(offset, reset)
-        self._list = []
-
-        for index in self._elements_lut.values():
-            self._list.append(self._element_get_data(index).decode())
+    def __init__(
+        self,
+        offset: int = 0,
+        size: Optional[int] = None,
+        reset: bool = False,
+        clear_if_full: bool = False
+    ) -> None:
+        super().__init__(offset, size, reset)
+        self.clear_if_full = clear_if_full
 
     def __bool__(self):
-        return len(self._list) > 0
+        return len(self._elements_lut) > 0
 
     def __getitem__(self, index):
-        return self._list[index]
+        name = f"{index}"
+        if name not in self._elements_lut:
+            raise IndexError(f"Invalid index: {index}")
+
+        return self.get_element(name)
+
+    def __iter__(self):
+        for name in self._elements_lut:
+            yield self.get_element(name)
 
     def __len__(self):
-        return len(self._list)
+        return len(self._elements_lut)
 
     def __setitem__(self, index, value):
-        name = f"l{index}"
+        name = f"{index}"
         if name not in self._elements_lut:
-            raise RuntimeError(f"Invalid index: {index}")
+            raise IndexError(f"Invalid index: {index}")
+
+        data_type = self._element_get_data_type(self._elements_lut[name])
+        if isinstance(value, int) and data_type != "i":
+            raise TypeError(f"Can't change element type. Attempted to change type from '{data_type}' to 'i'")
+        if isinstance(value, str) and data_type != "s":
+            raise TypeError(f"Can't change element type. Attempted to change type from '{data_type}' to 's'")
 
         self.set_element(name, value)
-        self._list[index] = value
 
     def append(self, value):
+        """Append new value to list.
+
+        Only supports int, str, float, and bool types.
+        If BackupList was initialized with `clear_if_full` True, this function will clear the entire
+        and add the new value if adding the new value would cause the list to overflow its size
+        or the end of BackupRAM memory.
+
+        Args:
+            value (generic): New value to append.
+
+        Raises:
+            TypeError: Unsupported value type.
+            MemoryError: BackupRAM is too full to append a new value.
+        """
         if isinstance(value, int):
             fmt_char = "i"
         elif isinstance(value, str):
             fmt_char = "s"
+        elif isinstance(value, float):
+            fmt_char = "f"
+        elif isinstance(value, bool):
+            fmt_char = "B"
         else:
-            raise RuntimeError(f"Unsupported value type for {value}: {type(value)}")
+            raise TypeError(f"Unsupported value type for {value}: {type(value)}")
 
-        index = self._get_num_elems() + 1
-        self.add_element(f"l{index}", fmt_char, value, clear_if_full=True)
-        self._list.append(value)
+        index = self._get_num_elems()
+        try:
+            self.add_element(f"{index}", fmt_char, value)
+        except MemoryError as exc:
+            if self.clear_if_full:
+                self.add_element(f"{0}", fmt_char, value, clear_if_full=True)
+            else:
+                raise exc
 
     def clear(self):
-        self._list.clear()
+        """Resets this lists section in BackupRAM"""
         self.reset()
 
     def copy(self) -> list:
-        return self._list.copy()
+        """Copy list
+
+        Returns:
+            list: Newly copied list.
+        """
+        new_list = []
+        for name in self._elements_lut.keys():
+            new_list.append(self.get_element(name))
+
+        return new_list
+
