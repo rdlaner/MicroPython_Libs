@@ -168,7 +168,7 @@ class Network(InterfaceProtocol):
         client.on_message = on_message_cb
         client.enable_logger(logging, log_level=config["logging_level"], logger_name="mqtt")
 
-        wifi_protocol = WifiProtocol(secrets["ssid"], secrets["password"], client_id, config["wifi_channel"])
+        wifi_protocol = WifiProtocol(secrets["ssid"], secrets["password"], client_id)
         mqtt_protocol = MqttProtocol(wifi_protocol, client)
 
         return cls(mqtt_protocol)

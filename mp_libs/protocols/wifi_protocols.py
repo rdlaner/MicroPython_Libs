@@ -38,7 +38,7 @@ class WifiProtocol(InterfaceProtocol):
     # Constants
     DEFAULT_CONNECTION_ATTEMPTS = const(3)
 
-    def __init__(self, ssid: str, password: str, hostname: str = None, channel: int = 0) -> None:
+    def __init__(self, ssid: str, password: str, hostname: str = None, channel: int = None) -> None:
         super().__init__()
         self._ssid = ssid
         self._password = password
@@ -51,14 +51,14 @@ class WifiProtocol(InterfaceProtocol):
             self._hostname = binascii.hexlify(machine.unique_id()).decode("utf-8")
 
         self._network_enable()
-        self._sta.config(channel=channel)
+        if channel:
+            self._sta.config(channel=channel)
         network.hostname(hostname)  # Apparently _sta.config is deprecated...
 
     def __repr__(self) -> str:
         return "WIFI"
 
-    def _connect_wifi(self, **kwargs) -> bool:
-        max_connect_attempts = kwargs.get("connect_attempts", 3)
+    def _connect_wifi(self, max_connect_attempts: int = 3, verbose: bool = False) -> bool:
         success = True
 
         if not self._sta.isconnected():
@@ -66,15 +66,17 @@ class WifiProtocol(InterfaceProtocol):
 
             while not self._sta.isconnected():
                 logger.debug(f"Connecting to AP: {self._ssid}")
-                networks = self._sta.scan()
 
-                # Each network is a tuple with the following data:
-                # (ssid, bssid, channel, RSSI, security, hidden)
-                networks = sorted(
-                    networks, key=lambda net: net[3], reverse=True)
+                if verbose:
+                    networks = self._sta.scan()
 
-                for net in networks:
-                    logger.debug(f"ssid: {net[0]}, rssi: {net[3]}")
+                    # Each network is a tuple with the following data:
+                    # (ssid, bssid, channel, RSSI, security, hidden)
+                    networks = sorted(
+                        networks, key=lambda net: net[3], reverse=True)
+
+                    for net in networks:
+                        logger.debug(f"ssid: {net[0]}, rssi: {net[3]}")
 
                 try:
                     self._sta.connect(self._ssid, self._password)
@@ -135,7 +137,7 @@ class WifiProtocol(InterfaceProtocol):
         logger.info("Connecting wifi...")
         self._network_enable()
         connect_attempts = kwargs.get("connect_attempts", self.DEFAULT_CONNECTION_ATTEMPTS)
-        return self._connect_wifi(connect_attempts=connect_attempts)
+        return self._connect_wifi(max_connect_attempts=connect_attempts)
 
     def disconnect(self, **kwargs) -> bool:
         """Disconnect from given wifi ssid.
