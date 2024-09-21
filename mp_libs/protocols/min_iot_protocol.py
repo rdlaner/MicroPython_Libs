@@ -1,14 +1,21 @@
-"""Minimal IoT Protocol Implementation"""
+"""Minimal IoT Protocol Implementation
+
+TODO: Update miniot and serial protocol receive functions to return True even if only partial msg
+      has been received, require the user to check for None to know if a full msg is returned.
+      This will allow users to know when to poll repeatedly which is important for those that
+      call receive infrequently.
+TODO: Add support for users to specify their own serializer/deserializer to improve on json.
+"""
 # pyright: reportGeneralTypeIssues=false
-# TODO: Update miniot and serial protocol receive functions to return True even if only partial msg
-#       has been received, require the user to check for None to know if a full msg is returned.
-#       This will allow users to know when to poll repeatedly which is important for those that
-#       call receive infrequently.
 
 # Standard imports
 import json
 import time
 from micropython import const
+try:
+    from typing import Dict, List, Optional
+except ImportError:
+    pass
 
 # Third party imports
 from mp_libs import logging
@@ -23,18 +30,24 @@ except ImportError:
 # Constants
 
 # Globals
-logger = logging.getLogger("miniot")
+logger: logging.Logger = logging.getLogger("miniot")
 logger.setLevel(config["logging_level"])
 
 
 class MinIotMessage():
     """Minimal IoT Message definition for use with the MinIotProtocol"""
-    def __init__(self, topic: str, msg: str) -> None:
+    def __init__(
+        self,
+        topic: str,
+        msg: str,
+        sent_ts: Optional[int] = None,
+        received_ts: Optional[int] = None
+    ) -> None:
         self.data = {
             "topic": topic,
             "msg": msg,
-            "sent_ts": None,
-            "received_ts": None,
+            "sent_ts": sent_ts,
+            "received_ts": received_ts,
         }
 
     def __repr__(self) -> str:
@@ -61,6 +74,15 @@ class MinIotMessage():
         return self.data["topic"]
 
     @classmethod
+    def create_from_dict(cls, data: Dict) -> "MinIotMessage":
+        return cls(
+            topic=data["topic"],
+            msg=data["msg"],
+            sent_ts=data["sent_ts"],
+            received_ts=data["received_ts"]
+        )
+
+    @classmethod
     def deserialize(cls, data: bytes) -> "MinIotMessage":
         """Deserialize a bytes object into a MinIoTMessage.
 
@@ -70,9 +92,8 @@ class MinIotMessage():
         Returns:
             MinIotMessage: New instance of MinIoTMessage.
         """
-        msg = cls(None, None)
         msg_data = json.loads(data)
-        msg.data = msg_data
+        msg = MinIotMessage.create_from_dict(msg_data)
 
         return msg
 
@@ -136,12 +157,16 @@ class MinIotProtocol(InterfaceProtocol):
         rxed_msgs = []
 
         if self.transport.receive(rxed_msgs):
+            # If the received msg is a miniot msg, deserialize.
+            # If it isn't, just pass it on up, let the upper layers handle it.
             data_available = True
-
             for msg in rxed_msgs:
-                iot_msg = MinIotMessage.deserialize(msg)
-                iot_msg.data["received_ts"] = time.time()
-                rxed_data.append(iot_msg.data)
+                try:
+                    iot_msg = MinIotMessage.deserialize(msg)
+                    iot_msg.data["received_ts"] = time.time()
+                    rxed_data.append(iot_msg.data)
+                except (ValueError, KeyError):
+                    rxed_data.append(msg)
 
         return data_available
 
