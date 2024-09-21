@@ -10,6 +10,10 @@ import machine
 import ntptime
 import socket
 from micropython import const
+try:
+    from typing import Any, List
+except ImportError:
+    pass
 
 # Third party imports
 from mp_libs import logging
@@ -71,6 +75,9 @@ class Network(InterfaceProtocol):
     def recover(self, **kwargs) -> bool:
         return self.transport.recover(**kwargs)
 
+    def scan(self, **kwargs) -> List[Any]:
+        return self.transport.scan(**kwargs)
+
     def send(self, msg, **kwargs) -> bool:
         return self.transport.send(msg, **kwargs)
 
@@ -112,7 +119,7 @@ class Network(InterfaceProtocol):
             Network: Network instance.
         """
         client_id = id_prefix + binascii.hexlify(machine.unique_id()).decode("utf-8")
-        espnow_protocol = EspnowProtocol(config["epn_peer_mac"], hostname=client_id, channel=config["epn_channel"])
+        espnow_protocol = EspnowProtocol(config["epn_peer_mac"], hostname=client_id, channel=config["epn_channel"], timeout_ms=config["epn_timeout_ms"])
         serial_protocol = SerialProtocol(espnow_protocol, mtu_size_bytes=DEFAULT_MTU_SIZE_BYTES)
         min_iot_protocol = MinIotProtocol(serial_protocol)
 

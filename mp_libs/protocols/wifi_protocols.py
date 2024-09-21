@@ -10,6 +10,10 @@ import network
 import sys
 import time
 from micropython import const
+try:
+    from typing import List
+except ImportError:
+    pass
 
 # Third party imports
 from mp_libs import logging
@@ -53,7 +57,7 @@ class WifiProtocol(InterfaceProtocol):
         self._network_enable()
         if channel:
             self._sta.config(channel=channel)
-        network.hostname(hostname)  # Apparently _sta.config is deprecated...
+        network.hostname(self._hostname)  # Apparently _sta.config is deprecated...
 
     def __repr__(self) -> str:
         return "WIFI"
@@ -187,6 +191,21 @@ class WifiProtocol(InterfaceProtocol):
             success = self._connect_wifi()
 
         return success
+
+    def scan(self, **kwargs) -> List:
+        """Performs scan operation.
+
+        Returns a list of detected networks sorted by signal strength.
+        Each network is represented by a tuple with these values:
+        (ssid, bssid, channel, RSSI, security, hidden)
+
+        Returns:
+            List: Scan results.
+        """
+        networks = self._sta.scan()
+        networks = sorted(networks, key=lambda net: net[3], reverse=True)
+
+        return networks
 
     def send(self, msg: str, **kwargs) -> bool:
         # TBD
@@ -331,6 +350,16 @@ class MqttProtocol(InterfaceProtocol):
                 success = self.connect(force=True)
 
         return success
+
+    def scan(self, **kwargs) -> List:
+        """Performs scan operation.
+
+        MqttProtocol does not have an explicit scan operation, passes this req on to the transport instead.
+
+        Returns:
+            List: Result of scan operation.
+        """
+        return self._transport.scan(**kwargs)
 
     def send(self, msg: str, **kwargs) -> bool:
         """Synchronously sends msg and topic to MQTT broker.

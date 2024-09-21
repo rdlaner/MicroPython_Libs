@@ -170,6 +170,16 @@ class MinIotProtocol(InterfaceProtocol):
 
         return data_available
 
+    def scan(self, **kwargs) -> List:
+        """Performs scan operation.
+
+        MinIotProtocol does not have an explicit scan operation, passes this req on to the transport instead.
+
+        Returns:
+            List: Result of scan operation.
+        """
+        return self.transport.scan(**kwargs)
+
     def send(self, msg, **kwargs) -> bool:
         """Synchronously send raw data via MinIoT protocol.
 

@@ -9,6 +9,10 @@ import sys
 from collections import namedtuple
 from math import ceil
 from micropython import const
+try:
+    from typing import List
+except ImportError:
+    pass
 
 # Third party imports
 from mp_libs import logging
@@ -502,6 +506,16 @@ class SerialProtocol(InterfaceProtocol):
             bool: True if recovery succeeded, False if it failed.
         """
         return self.transport.recover(**kwargs)
+
+    def scan(self, **kwargs) -> List:
+        """Performs scan operation.
+
+        SerialProtocol does not have an explicit scan operation, passes this req on to the transport instead.
+
+        Returns:
+            List: Result of scan operation.
+        """
+        return self.transport.scan(**kwargs)
 
     def send(self, msg, **kwargs) -> bool:
         """Synchronously send data using the SerialProtocol.
