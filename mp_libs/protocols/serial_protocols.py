@@ -23,7 +23,7 @@ except ImportError:
 # Constants
 DEFAULT_SERIAL_MESSAGE_MTU_SIZE_BYTES = const(200)  # aka SerialPacket size
 SERIAL_MSG_ID_MAX = const(256)
-SERIAL_PACKET_DELIM = b"<PKT>"
+SERIAL_PACKET_DELIM = b"<SER>"
 SERIAL_PACKET_HDR_FORMAT_STR = f"<{len(SERIAL_PACKET_DELIM)}sBBBHB"
 SERIAL_PACKET_HDR_SIZE_BYTES = struct.calcsize(SERIAL_PACKET_HDR_FORMAT_STR)
 SERIAL_PACKET_CRC_SIZE_BYTES = const(4)
@@ -462,15 +462,21 @@ class SerialProtocol(InterfaceProtocol):
             bool: True if data is ready and returned. False if no data available.
         """
         data_available = False
-        rxed_serial_packets = []
+        rxed_packets = []
 
-        if self.transport.receive(rxed_serial_packets):
-            # Process each received serial packet
-            for packet in rxed_serial_packets:
-                try:
-                    self._process_packet(packet)
-                except SerialPacketException as exc:
-                    logger.exception("Failed processing SerialPacket", exc_info=exc)
+        if self.transport.receive(rxed_packets):
+            data_available = True
+
+            # If the received packet is a serial packet, perform processing.
+            # If it isn't, just pass it on up, let the upper layers handle it.
+            for packet in rxed_packets:
+                if packet.startswith(SERIAL_PACKET_DELIM):
+                    try:
+                        self._process_packet(packet)
+                    except SerialPacketException as exc:
+                        logger.exception("Failed processing SerialPacket", exc_info=exc)
+                else:
+                    rxed_data.append(packet)
 
             # Extract all fully formed serial messages, if enough packets have been received
             while True:
