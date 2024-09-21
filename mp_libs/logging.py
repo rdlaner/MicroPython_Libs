@@ -3,10 +3,12 @@ logging.py
 
 # TODO: Update BufferHandler to support fixed size buffer
 """
-from micropython import const
 import io
 import sys
 import time
+from collections import namedtuple
+from machine import RTC
+from micropython import const
 
 CRITICAL = const(50)
 ERROR = const(40)
@@ -14,8 +16,8 @@ WARNING = const(30)
 INFO = const(20)
 DEBUG = const(10)
 NOTSET = const(0)
-
 _DEFAULT_LEVEL = const(WARNING)
+_IS_RTC_SET_THRESH = const(779_658_124)
 
 _level_dict = {
     CRITICAL: "CRITICAL",
@@ -28,20 +30,29 @@ _level_dict = {
 
 _loggers = {}
 _stream = sys.stderr
-_default_fmt = "%(mono)d %(levelname)s-%(name)s:%(message)s"
+# _default_fmt = "%(mono)d %(levelname)s-%(name)s:%(message)s"
+_default_fmt = "%(asctime)s.%(msecs)d %(levelname)s-%(name)s:%(message)s"
 _default_datefmt = "%Y-%m-%d %H:%M:%S"
 
 
-class LogRecord:
-    def set(self, name, level, message):
-        self.name = name
-        self.levelno = level
-        self.levelname = _level_dict[level]
-        self.message = message
-        self.ct = time.time()
-        self.mono = time.ticks_ms()
-        self.msecs = int((self.ct - int(self.ct)) * 1000)
-        self.asctime = None
+LogRecord = namedtuple(
+    "LogRecord", ("name", "levelno", "levelname", "message", "dt", "mono", "msecs", "is_time_sync")
+)
+
+
+def _log_record_factory(name: str, level: int, msg: str) -> LogRecord:
+    if time.time() < _IS_RTC_SET_THRESH:
+        is_time_sync = False
+        dt = time.localtime()
+        msecs = time.ticks_ms()
+    else:
+        rtc = RTC()
+        dt = rtc.datetime()
+        now = rtc.now()
+        msecs = now - ((now // 1_000_000) * 1_000_000)
+        is_time_sync = True
+
+    return LogRecord(name, level, _level_dict[level], msg, dt, time.ticks_ms(), msecs, is_time_sync)
 
 
 class Handler:
@@ -102,22 +113,26 @@ class Formatter:
         self.fmt = _default_fmt if fmt is None else fmt
         self.datefmt = _default_datefmt if datefmt is None else datefmt
 
-    def usesTime(self):
-        return "asctime" in self.fmt
-
     def formatTime(self, datefmt, record):
         if hasattr(time, "strftime"):
-            return time.strftime(datefmt, time.localtime(record.ct))
-        return None
+            return time.strftime(datefmt, time.localtime(record.dt))
+
+        if record.is_time_sync:
+            return f"{record.dt[0]}-{record.dt[1]:02d}-{record.dt[2]:02d} {record.dt[4]:02d}:{record.dt[5]:02d}:{record.dt[6]:02d}"
+
+        return f"{record.dt[0]}-{record.dt[1]:02d}-{record.dt[2]:02d} {record.dt[3]:02d}:{record.dt[4]:02d}:{record.dt[5]:02d}"
 
     def format(self, record):
-        if self.usesTime():
-            record.asctime = self.formatTime(self.datefmt, record)
+        if "{asctime}" in self.fmt or "%(asctime)s" in self.fmt:
+            asctime = self.formatTime(self.datefmt, record)
+        else:
+            asctime = ""
+
         return self.fmt % {
             "name": record.name,
             "message": record.message,
             "msecs": record.msecs,
-            "asctime": record.asctime,
+            "asctime": asctime,
             "levelname": record.levelname,
             "mono": record.mono,
         }
@@ -128,7 +143,6 @@ class Logger:
         self.name = name
         self.level = level
         self.handlers = []
-        self.record = LogRecord()
 
     def setLevel(self, level):
         self.level = level
@@ -145,15 +159,15 @@ class Logger:
                 if isinstance(args[0], dict):
                     args = args[0]
                 msg = msg % args
-            self.record.set(self.name, level, msg)
+            record = _log_record_factory(self.name, level, msg)
 
             # Call any root handlers
             for h in getLogger().handlers:
-                h.emit(self.record)
+                h.emit(record)
 
             # Call any local handlers
             for h in self.handlers:
-                h.emit(self.record)
+                h.emit(record)
 
     def debug(self, msg, *args):
         self.log(DEBUG, msg, *args)
@@ -241,8 +255,8 @@ def addLevelName(level, name):
 def basicConfig(
     filename=None,
     filemode="a",
-    format=None,
-    datefmt=None,
+    fmt=_default_fmt,
+    datefmt=_default_datefmt,
     level=NOTSET,
     stream=None,
     encoding="UTF-8",
@@ -264,7 +278,7 @@ def basicConfig(
             handler = FileHandler(filename, filemode, encoding)
 
         handler.setLevel(level)
-        handler.setFormatter(Formatter(format, datefmt))
+        handler.setFormatter(Formatter(fmt, datefmt))
 
         logger.setLevel(level)
         logger.addHandler(handler)
