@@ -18,6 +18,7 @@ except ImportError:
     pass
 
 # Third party imports
+from mp_libs import base64
 from mp_libs import logging
 from mp_libs.protocols import InterfaceProtocol
 
@@ -54,19 +55,34 @@ class MinIotMessage():
         return self.serialize().decode()
 
     @property
-    def msg(self):
+    def msg(self) -> str:
         """Get msg attribute"""
         return self.data["msg"]
 
+    @msg.setter
+    def msg(self, data: str) -> None:
+        """Set msg attribute"""
+        self.data["msg"] = data
+
     @property
-    def received_ts(self):
+    def received_ts(self) -> int:
         """Get received timestamp attribute"""
         return self.data["received_ts"]
 
+    @received_ts.setter
+    def received_ts(self, ts: int) -> None:
+        """Set received timestamp value"""
+        self.data["received_ts"] = ts
+
     @property
-    def sent_timestamp(self):
+    def sent_ts(self):
         """Get sent timestamp attribute"""
         return self.data["sent_ts"]
+
+    @sent_ts.setter
+    def sent_ts(self, ts: int) -> None:
+        """Set sent timestamp value."""
+        self.data["sent_ts"] = ts
 
     @property
     def topic(self):
@@ -145,10 +161,10 @@ class MinIotProtocol(InterfaceProtocol):
 
         This function should be called in a polling fashion as each call will read in a piece of
         a MinIotMessage. Once enough pieces have been received, one or more MinIotMessages will
-        be constructed, their payloads extracted and returned.
+        be constructed and returned.
 
         Args:
-            rxed_data (list): List of received MinIotMessage payloads, if any.
+            rxed_data (list): List of received MinIotMessages, if any.
 
         Returns:
             bool: True if data is ready and returned. False if no data available.
@@ -163,10 +179,18 @@ class MinIotProtocol(InterfaceProtocol):
             for msg in rxed_msgs:
                 try:
                     iot_msg = MinIotMessage.deserialize(msg)
-                    iot_msg.data["received_ts"] = time.time()
-                    rxed_data.append(iot_msg.data)
                 except (ValueError, KeyError):
                     rxed_data.append(msg)
+                    continue
+
+                # Attempt to base64 decode the msg payload in case it is a bytes/bytearray payload
+                try:
+                    iot_msg.msg = base64.b64decode(iot_msg.msg, validate=True)
+                except (base64.BinasciiError, TypeError, ValueError):
+                    pass
+
+                iot_msg.received_ts = time.time()
+                rxed_data.append(iot_msg)
 
         return data_available
 
@@ -187,7 +211,7 @@ class MinIotProtocol(InterfaceProtocol):
         message via the provided transport.
 
         Args:
-            msg (any): Msg payload. If not str or MinIotMessage, will convert to str.
+            msg (any): Msg payload.
             topic (str): MinIotMessage topic.
 
         Returns:
@@ -200,6 +224,8 @@ class MinIotProtocol(InterfaceProtocol):
             miniot_msg = MinIotMessage(topic, msg)
         elif isinstance(msg, MinIotMessage):
             miniot_msg = msg
+        elif isinstance(msg, (bytes, bytearray)):
+            miniot_msg = MinIotMessage(topic, base64.b64encode(msg).decode("utf-8"))
         else:
             miniot_msg = MinIotMessage(topic, str(msg))
 
@@ -214,6 +240,6 @@ class MinIotProtocol(InterfaceProtocol):
         Returns:
             bool: True if successful, False if failed.
         """
-        msg.data["sent_ts"] = time.time()
+        msg.sent_ts = time.time()
 
         return self.transport.send(msg.serialize())
