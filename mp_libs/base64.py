@@ -16,6 +16,7 @@ import binascii
 
 __all__ = [
     # Legacy interface exports traditional RFC 1521 Base64 encodings
+    "BinasciiError",
     "encode",
     "decode",
     "encodebytes",
@@ -37,6 +38,14 @@ __all__ = [
     "urlsafe_b64encode",
     "urlsafe_b64decode",
 ]
+
+
+# Not all micropython ports have an implementation of the binascii.Error exception
+try:
+    from binascii import Error as BinasciiError
+except ImportError:
+    class BinasciiError(Exception):
+        """Custom exception to mimic binascii.Error"""
 
 
 bytes_types = (bytes, bytearray)  # Types acceptable as binary data
@@ -106,12 +115,12 @@ def b64decode(s, altchars=None, validate=False):
     string of length 2 which specifies the alternative alphabet used
     instead of the '+' and '/' characters.
 
-    The decoded string is returned.  A binascii.Error is raised if s is
+    The decoded string is returned.  A BinasciiError is raised if s is
     incorrectly padded.
 
     If validate is False (the default), non-base64-alphabet characters are
     discarded prior to the padding check.  If validate is True,
-    non-base64-alphabet characters in the input result in a binascii.Error.
+    non-base64-alphabet characters in the input result in a BinasciiError.
     """
     s = _bytes_from_decode_data(s)
     if altchars is not None:
@@ -119,7 +128,7 @@ def b64decode(s, altchars=None, validate=False):
         assert len(altchars) == 2, repr(altchars)
         s = _translate(s, _maketrans(altchars, b"+/"))
     if validate and not re.match(b"^[A-Za-z0-9+/]*=*$", s):
-        raise binascii.Error("Non-base64 digit found")
+        raise BinasciiError(f"Non-base64 digit found: {s}")
     return binascii.a2b_base64(s)
 
 
@@ -135,7 +144,7 @@ def standard_b64decode(s):
     """Decode a byte string encoded with the standard Base64 alphabet.
 
     s is the byte string to decode.  The decoded byte string is
-    returned.  binascii.Error is raised if the input is incorrectly
+    returned.  BinasciiError is raised if the input is incorrectly
     padded or if there are non-alphabet characters present in the
     input.
     """
@@ -161,7 +170,7 @@ def urlsafe_b64decode(s):
     """Decode a byte string encoded with the standard Base64 alphabet.
 
     s is the byte string to decode.  The decoded byte string is
-    returned.  binascii.Error is raised if the input is incorrectly
+    returned.  BinasciiError is raised if the input is incorrectly
     padded or if there are non-alphabet characters present in the
     input.
 
@@ -274,14 +283,14 @@ def b32decode(s, casefold=False, map01=None):
     the letter O).  For security purposes the default is None, so that
     0 and 1 are not allowed in the input.
 
-    The decoded byte string is returned.  binascii.Error is raised if
+    The decoded byte string is returned.  BinasciiError is raised if
     the input is incorrectly padded or if there are non-alphabet
     characters present in the input.
     """
     s = _bytes_from_decode_data(s)
     quanta, leftover = divmod(len(s), 8)
     if leftover:
-        raise binascii.Error("Incorrect padding")
+        raise BinasciiError("Incorrect padding")
     # Handle section 2.4 zero and one mapping.  The flag map01 will be either
     # False, or the character to map the digit 1 (one) to.  It should be
     # either L (el) or I (eye).
@@ -308,7 +317,7 @@ def b32decode(s, casefold=False, map01=None):
     for c in s:
         val = _b32rev.get(c)
         if val is None:
-            raise binascii.Error("Non-base32 digit found")
+            raise BinasciiError("Non-base32 digit found")
         acc += _b32rev[c] << shift
         shift -= 5
         if shift < 0:
@@ -328,7 +337,7 @@ def b32decode(s, casefold=False, map01=None):
     elif padchars == 6:
         last = last[:-4]
     else:
-        raise binascii.Error("Incorrect padding")
+        raise BinasciiError("Incorrect padding")
     parts.append(last)
     return b"".join(parts)
 
@@ -353,7 +362,7 @@ def b16decode(s, casefold=False):
     specifying whether a lowercase alphabet is acceptable as input.
     For security purposes, the default is False.
 
-    The decoded byte string is returned.  binascii.Error is raised if
+    The decoded byte string is returned.  BinasciiError is raised if
     s were incorrectly padded or if there are non-alphabet characters
     present in the string.
     """
@@ -361,7 +370,7 @@ def b16decode(s, casefold=False):
     if casefold:
         s = s.upper()
     if re.search(b"[^0-9A-F]", s):
-        raise binascii.Error("Non-base16 digit found")
+        raise BinasciiError("Non-base16 digit found")
     return binascii.unhexlify(s)
 
 
