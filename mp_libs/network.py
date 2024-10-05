@@ -1,6 +1,6 @@
 """Network Support Library
 
-# TODO: Don't rely on config module like this. Do something better.
+# TODO: Don't rely on config/secrets module like this. Do something better.
 """
 # pylint: disable=no-name-in-module, import-error, disable=no-member, c-extension-no-member
 # pyright: reportGeneralTypeIssues=false
@@ -59,7 +59,7 @@ class Network(InterfaceProtocol):
         return self.transport.is_connected()
 
     def ntp_time_sync(self) -> bool:
-        """Performs time sync if the underlaying transport has a wifi connection"""
+        """Performs time sync if the underlying transport has a wifi connection"""
         if isinstance(self.transport, (MqttProtocol, WifiProtocol)):
             try:
                 ntptime.settime()
@@ -179,3 +179,17 @@ class Network(InterfaceProtocol):
         mqtt_protocol = MqttProtocol(wifi_protocol, client)
 
         return cls(mqtt_protocol)
+
+    @classmethod
+    def create_wifi(cls, id_prefix: str = "") -> "Network":
+        """Creates and returns a Network instance configured to the Wifi protocol.
+
+        Args:
+            id_prefix (str, optional): Prefix string for hostname. Defaults to "".
+
+        Returns:
+            Network: Network instance.
+        """
+        client_id = id_prefix + binascii.hexlify(machine.unique_id()).decode("utf-8")
+
+        return cls(WifiProtocol(secrets["ssid"], secrets["password"], client_id))
