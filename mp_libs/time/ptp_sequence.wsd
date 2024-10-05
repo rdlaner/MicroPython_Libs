@@ -1,0 +1,8 @@
+@startuml
+periph -> master: SYNC_REQ(num_sync_cycles)
+master --> periph: SYNC_START(T1)
+periph -> periph: T2
+periph -> master: DELAY_REQ(T3)
+master -> master: T4
+master --> periph: DELAY_RESP(T4)
+@enduml

@@ -218,7 +218,7 @@ class MqttProtocol(InterfaceProtocol):
     This protocol will send and receive MQTT via the provided transport protocol. In this case,
     the transport must be a WifiProtocol instance.
     """
-    def __init__(self, transport: WifiProtocol, mqtt_client: MQTT) -> None:
+    def __init__(self, transport: WifiProtocol, mqtt_client: MQTT.MQTT) -> None:
         super().__init__()
         self._transport = transport
         self._mqtt_client = mqtt_client
