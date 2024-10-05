@@ -385,7 +385,7 @@ class EspnowProtocol(InterfaceProtocol):
             start = time.ticks_ms()
             try:
                 while True:
-                    if timeout_ms is not None and time.ticks_ms() - start > timeout_ms:
+                    if timeout_ms is not None and time.ticks_diff(time.ticks_ms(), start) > timeout_ms:
                         raise TimeoutError()
 
                     data_available = self.receive(response)
