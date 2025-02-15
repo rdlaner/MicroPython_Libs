@@ -2,9 +2,11 @@
 
 TODO: Add alarm support API
 """
-# pylint: disable=import-error, wrong-import-order
+# pylint: disable=import-error, wrong-import-order, no-member, raise-missing-from
 
 # Standard imports
+import io
+import sys
 from machine import I2C
 from micropython import const
 
@@ -130,6 +132,10 @@ logger = logging.getLogger("LC709204F")
 logger.setLevel(config["logging_level"])
 
 
+class FuelGaugeError(Exception):
+    """General error for all fuel gauge exceptions"""
+
+
 class LC709204F():
     """LC709204F Battery Fuel Gauge Driver"""
     def __init__(self, i2c: I2C) -> None:
@@ -142,9 +148,14 @@ class LC709204F():
         return val
 
     def _read_reg(self, reg: int) -> int:
-        data_raw = self._i2c.readfrom_mem(I2C_ADDR, reg, 3)
-        data = int.from_bytes(data_raw[0:2], "little")
+        try:
+            data_raw = self._i2c.readfrom_mem(I2C_ADDR, reg, 3)
+        except OSError as exc:
+            buf = io.StringIO()
+            sys.print_exception(exc, buf)  # type: ignore
+            raise FuelGaugeError(f"I2C read failed. exc:\n{buf.getvalue()}")
 
+        data = int.from_bytes(data_raw[0:2], "little")
         cmd = bytearray(5)
         cmd[0] = I2C_ADDR << 1  # Write byte
         cmd[1] = reg            # Register
@@ -155,7 +166,7 @@ class LC709204F():
         expected_crc = self._crc8(cmd)
 
         if actual_crc != expected_crc:
-            raise RuntimeError(f"I2C read failed CRC. Expected: {hex(expected_crc)}, Actual: {hex(actual_crc)}")
+            raise FuelGaugeError(f"I2C read failed CRC. Expected: {hex(expected_crc)}, Actual: {hex(actual_crc)}")
 
         logger.debug(f"Read Reg Success - Reg: {hex(reg)}, Data: {hex(data)}, CRC: {hex(actual_crc)}")
         return data
@@ -167,7 +178,13 @@ class LC709204F():
         cmd[2] = data & 0x00FF
         cmd[3] = (data & 0xFF00) >> 8
         cmd[4] = self._crc8(cmd[0:4])
-        self._i2c.writeto_mem(I2C_ADDR, reg, cmd[2:])
+
+        try:
+            self._i2c.writeto_mem(I2C_ADDR, reg, cmd[2:])
+        except OSError as exc:
+            buf = io.StringIO()
+            sys.print_exception(exc, buf)  # type: ignore
+            raise FuelGaugeError(f"I2C write failed. exc:\n{buf.getvalue()}")
 
         logger.debug(f"Write Reg Success - Reg: {hex(reg)}, Data: {hex(data)}, CRC: {hex(cmd[4])}")
 
