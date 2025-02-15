@@ -1,6 +1,6 @@
 """PowerFeather BSP
 
-TODO: Properly handle cases where battery isn't (yet) connected
+TODO: Use specific exceptions instead of just RuntimeError everywhere
 TODO: Add support for thermistors
 TODO: Add support for alarms
 """
@@ -35,8 +35,12 @@ I2C_TIMEOUT = const(50000)
 CHARGER_ADC_WAIT_TIME_MS = const(90)
 
 # Globals
-logger = logging.getLogger("PF")
+logger: logging.Logger = logging.getLogger("PF")
 logger.setLevel(config["logging_level"])
+
+
+class BatteryError(Exception):
+    """Battery errors"""
 
 
 class BatteryType(Enum):
@@ -143,6 +147,10 @@ class PowerFeather():
         logger.info("Charger IC initialized")
 
     def _init_fuel_gauge(self, force: bool = False) -> None:
+        if not self.is_batt_connected:
+            logger.warning("Cannot initialize batt, no battery is connected")
+            return
+
         if not force and self._is_fuel_gauge_initialized():
             logger.info("Fuel gauge already initialized")
             return
@@ -157,9 +165,7 @@ class PowerFeather():
         # Initialize Fuel Gauge if a battery capacity & profile have been defined. If a battery is
         # not present on startup, this will fail.
         # Fuel Gauge initialization checks will therefore be made with subsequent commands.
-        # TODO: Verify that these commands fail if no battery is connected and, if so, make sure
-        #       we handle this gracefully.
-        if self._batt_cap is not None and self._batt_type is not None and self._term_curr is not None:
+        if self.is_batt_configured:
             apa = self._fuel_gauge.apa_calculate(self._batt_type, self._batt_cap)
             self._fuel_gauge.apa = apa
             self._fuel_gauge.batt_profile = self._batt_type
@@ -183,8 +189,8 @@ class PowerFeather():
         # It's possible a fuel gauge was initialized with a different battery capacity and since then a new battery
         # with a different capacity has been connected.
         if (
-            self._batt_cap is not None and
-            self._batt_type is not None and
+            self.is_batt_configured and
+            self.is_batt_connected and
             self._fuel_gauge.apa == self._fuel_gauge.apa_calculate(self._batt_type, self._batt_cap)
         ):
             return True
@@ -214,6 +220,18 @@ class PowerFeather():
         self._charger.adc_setup(True, bq.ADC_RATE_ONESHOT, bq.ADC_RESOLUTION_10, False, False)
         time.sleep_ms(CHARGER_ADC_WAIT_TIME_MS)  # pylint: disable=no-member
         logger.info("Charger ADC updated")
+
+    @property
+    def is_batt_configured(self) -> bool:
+        return self._batt_type is not None and self._batt_cap is not None and self._term_curr is not None
+
+    @property
+    def is_batt_connected(self) -> bool:
+        try:
+            self._fuel_gauge.apa
+        except fg.FuelGaugeError:
+            return False
+        return True
 
     def alarm_batt_low_charge(self, percent: int) -> None:
         pass
@@ -255,16 +273,19 @@ class PowerFeather():
         """Get the estimated battery charge percentage.
 
         Raises:
-            RuntimeError: SQT power (I2C PU power) is not enabled.
-            RuntimeError: No battery has been configured.
+            BatteryError: SQT power (I2C PU power) is not enabled.
+            BatteryError: No battery is connected.
+            BatteryError: No battery has been configured.
 
         Returns:
             int: Battery charge percentage.
         """
         if not self._pin_sqt.value():
-            raise RuntimeError("Can't get batt charge until SQT is enabled")
-        if self._batt_cap is None or self._batt_type is None:
-            raise RuntimeError("Can't get batt charge, no battery has been configured")
+            raise BatteryError("Can't get batt charge until SQT is enabled")
+        if not self.is_batt_connected:
+            raise BatteryError("Can't get batt charge, no battery is connected")
+        if not self.is_batt_configured:
+            raise BatteryError("Can't get batt charge, no battery has been configured")
 
         self._init_fuel_gauge()  # Will skip initialization if already initialized
 
@@ -279,13 +300,13 @@ class PowerFeather():
             enable (bool): True to enable, False to disable.
 
         Raises:
-            RuntimeError: SQT power (I2C PU power) is not enabled.
-            RuntimeError: No battery has been configured.
+            BatteryError: SQT power (I2C PU power) is not enabled.
+            BatteryError: No battery has been configured.
         """
         if not self._pin_sqt.value():
-            raise RuntimeError("Can't update batt charging until SQT is enabled")
+            raise BatteryError("Can't update batt charging until SQT is enabled")
         if self._batt_cap is None:
-            raise RuntimeError("Can't update batt charging, no battery has been configured")
+            raise BatteryError("Can't update batt charging, no battery has been configured")
 
         self._charger.charging_enable = enable
         logger.info(f"Batt charging set to: {enable}")
@@ -300,16 +321,16 @@ class PowerFeather():
             current (int): Max current in mA. Defaults to None.
 
         Raises:
-            RuntimeError: SQT power (I2C PU power) is not enabled.
-            RuntimeError: No battery has been configured.
+            BatteryError: SQT power (I2C PU power) is not enabled.
+            BatteryError: No battery has been configured.
 
         Returns:
             Optional[init]: Max charging current, if none specified.
         """
         if not self._pin_sqt.value():
-            raise RuntimeError("Can't update batt charging until SQT is enabled")
+            raise BatteryError("Can't update batt charging until SQT is enabled")
         if self._batt_cap is None:
-            raise RuntimeError("Can't update batt charging, no battery has been configured")
+            raise BatteryError("Can't update batt charging, no battery has been configured")
 
         if current is None:
             return self._charger.charging_current_limit
@@ -322,16 +343,16 @@ class PowerFeather():
         """Get the current battery charging status string.
 
         Raises:
-            RuntimeError: SQT power (I2C PU power) is not enabled.
-            RuntimeError: No battery has been configured.
+            BatteryError: SQT power (I2C PU power) is not enabled.
+            BatteryError: No battery has been configured.
 
         Returns:
             str: Charging status
         """
         if not self._pin_sqt.value():
-            raise RuntimeError("Can't get batt charging status until SQT is enabled")
+            raise BatteryError("Can't get batt charging status until SQT is enabled")
         if self._batt_cap is None:
-            raise RuntimeError("Can't get batt charging status, no battery has been configured")
+            raise BatteryError("Can't get batt charging status, no battery has been configured")
 
         status = self._charger.charging_status
         if status == bq.CHARGE_STATUS_NOT:
@@ -352,16 +373,16 @@ class PowerFeather():
         """Get the most recent battery current in mA.
 
         Raises:
-            RuntimeError: SQT power (I2C PU power) is not enabled.
-            RuntimeError: No battery has been configured.
+            BatteryError: SQT power (I2C PU power) is not enabled.
+            BatteryError: No battery has been configured.
 
         Returns:
             Optional[int]: Battery current in mA if valid. None if invalid.
         """
         if not self._pin_sqt.value():
-            raise RuntimeError("Can't get batt current until SQT is enabled")
+            raise BatteryError("Can't get batt current until SQT is enabled")
         if self._batt_cap is None:
-            raise RuntimeError("Can't get batt current, no battery has been configured")
+            raise BatteryError("Can't get batt current, no battery has been configured")
 
         self._charger_adc_update()
         current = self._charger.batt_current
@@ -374,16 +395,19 @@ class PowerFeather():
         """Get the estimated number of battery cycles.
 
         Raises:
-            RuntimeError: SQT power (I2C PU power) is not enabled.
-            RuntimeError: No battery has been configured.
+            BatteryError: SQT power (I2C PU power) is not enabled.
+            BatteryError: No battery is connected.
+            BatteryError: No battery has been configured.
 
         Returns:
             int: Number of battery cycles.
         """
         if not self._pin_sqt.value():
-            raise RuntimeError("Can't get batt cycles until SQT is enabled")
-        if self._batt_cap is None or self._batt_type is None:
-            raise RuntimeError("Can't get batt cycles, no battery has been configured")
+            raise BatteryError("Can't get batt cycles until SQT is enabled")
+        if not self.is_batt_connected:
+            raise BatteryError("Can't get batt cycles, no battery is connected")
+        if not self.is_batt_configured:
+            raise BatteryError("Can't get batt cycles, no battery has been configured")
 
         self._init_fuel_gauge()  # Will skip initialization if already initialized
 
@@ -398,13 +422,16 @@ class PowerFeather():
             enable (bool): True to enable, False to disable.
 
         Raises:
-            RuntimeError: SQT power (I2C PU power) is not enabled.
-            RuntimeError: No battery has been configured.
+            BatteryError: SQT power (I2C PU power) is not enabled.
+            BatteryError: No battery is connected.
+            BatteryError: No battery has been configured.
         """
         if not self._pin_sqt.value():
-            raise RuntimeError("Can't enable/disable fuel gauge until SQT is enabled")
-        if self._batt_cap is None or self._batt_type is None:
-            raise RuntimeError("Can't enable/disable fuel gauge, no battery has been configured")
+            raise BatteryError("Can't enable/disable fuel gauge until SQT is enabled")
+        if not self.is_batt_connected:
+            raise BatteryError("Can't enable/disable fuel gauge, no battery is connected")
+        if not self.is_batt_configured:
+            raise BatteryError("Can't enable/disable fuel gauge, no battery has been configured")
 
         # Perform initialization regardless since it is possible for the battery to be plugged
         # and unplugged throughout runtime.
@@ -421,16 +448,19 @@ class PowerFeather():
         """Get estimated battery health percentage.
 
         Raises:
-            RuntimeError: SQT power (I2C PU power) is not enabled.
-            RuntimeError: No battery has been configured.
+            BatteryError: SQT power (I2C PU power) is not enabled.
+            BatteryError: No battery is connected.
+            BatteryError: No battery has been configured.
 
         Returns:
             int: Battery health percentage
         """
         if not self._pin_sqt.value():
-            raise RuntimeError("Can't get batt health until SQT is enabled")
-        if self._batt_cap is None or self._batt_type is None:
-            raise RuntimeError("Can't get batt health, no battery has been configured")
+            raise BatteryError("Can't get batt health until SQT is enabled")
+        if not self.is_batt_connected:
+            raise BatteryError("Can't get batt health, no battery is connected")
+        if not self.is_batt_configured:
+            raise BatteryError("Can't get batt health, no battery has been configured")
 
         self._init_fuel_gauge()  # Will skip initialization if already initialized
 
@@ -451,16 +481,19 @@ class PowerFeather():
         If battery is discharging, will return the estimated number of minutes until battery is fully discharged.
 
         Raises:
-            RuntimeError: SQT power (I2C PU power) is not enabled.
-            RuntimeError: No battery has been configured.
+            BatteryError: SQT power (I2C PU power) is not enabled.
+            BatteryError: No battery is connected.
+            BatteryError: No battery has been configured.
 
         Returns:
             Optional[int]: Remaining battery minutes. None if estimation error.
         """
         if not self._pin_sqt.value():
-            raise RuntimeError("Can't get time left until SQT is enabled")
-        if self._batt_cap is None or self._batt_type is None:
-            raise RuntimeError("Can't get time left, no battery has been configured")
+            raise BatteryError("Can't get time left until SQT is enabled")
+        if not self.is_batt_connected:
+            raise BatteryError("Can't get time left, no battery is connected")
+        if not self.is_batt_configured:
+            raise BatteryError("Can't get time left, no battery has been configured")
 
         self._init_fuel_gauge()  # Will skip initialization if already initialized
 
@@ -488,27 +521,38 @@ class PowerFeather():
         it from the battery charger. The latter takes longer in order to sample the ADC.
 
         Raises:
-            RuntimeError: SQT power (I2C PU power) is not enabled.
-            RuntimeError: No battery has been configured.
+            BatteryError: SQT power (I2C PU power) is not enabled.
+            BatteryError: No battery is connected.
+            BatteryError: No battery has been configured.
 
         Returns:
             int: Battery voltage in mV.
         """
         if not self._pin_sqt.value():
-            raise RuntimeError("Can't get batt voltage until SQT is enabled")
-        if self._batt_cap is None or self._batt_type is None:
-            raise RuntimeError("Can't get batt voltage, no battery has been configured")
+            raise BatteryError("Can't get batt voltage until SQT is enabled")
+        if not self.is_batt_connected:
+            raise BatteryError("Can't get batt voltage, no battery is connected")
+        if not self.is_batt_configured:
+            raise BatteryError("Can't get batt voltage, no battery has been configured")
 
         try:
             self._init_fuel_gauge()  # Will skip initialization if already initialized
             voltage = self._fuel_gauge.batt_voltage
-        except (OSError, RuntimeError) as exc:
+        except fg.FuelGaugeError as exc:
             logger.exception("Batt Voltage - FG is not available, switching to charger", exc_info=exc)
             self._charger_adc_update()
             voltage = self._charger.batt_voltage
 
         logger.info("Measured Batt Voltage: {voltage} mV")
         return voltage
+
+    def is_usb_connected(self) -> bool:
+        """Checks if a usb-c cable is connected by checking if the bus voltage is greater than 0.
+
+        Returns:
+            bool: True if USB-C is connected. False if not.
+        """
+        return self._charger.bus_voltage > 0
 
     def led_on(self) -> None:
         """Turns ON user LED."""
