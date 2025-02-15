@@ -16,6 +16,7 @@ class Button():
     def __init__(
         self,
         pin: Pin,
+        timer_id: int = 0,
         cb: "Callable[[Pin], None]" = None,
         debounce_period_msec: int = DEF_DEBOUNCE_PERIOD_MSEC,
         debounce_duration_msec: int = DEF_DEBOUNCE_DURATION_MSEC,
@@ -27,7 +28,7 @@ class Button():
         self._active_low = active_low
         self._check_count = 0
         self._total_checks = debounce_duration_msec // debounce_period_msec
-        self._timer = Timer(-1)
+        self._timer = Timer(timer_id)
         self._pin.irq(handler=self._button_handler, trigger=Pin.IRQ_FALLING | Pin.IRQ_RISING)
 
     def _button_handler(self, pin):
