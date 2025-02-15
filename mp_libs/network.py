@@ -32,7 +32,7 @@ except ImportError:
 from secrets import secrets
 
 # Constants
-DEFAULT_MTU_SIZE_BYTES = const(250)
+DEFAULT_MTU_SIZE_BYTES = const(240)
 TZ_OFFSET_PACIFIC = const(-8)
 
 # Globals
