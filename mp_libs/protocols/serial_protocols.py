@@ -85,7 +85,7 @@ class SerialPacket():
         self._serialize()
 
     def __repr__(self) -> str:
-        return f"{self.header}\nPayload: {self.payload}\nCRC: {self.crc}"
+        return f"{self.header}\nPayload: {self.payload}\nCRC: 0x{self.crc:X}"
 
     def _serialize(self) -> None:
         """Serializes this packet into a bytes object.
@@ -95,14 +95,19 @@ class SerialPacket():
         """
         format_str = SERIAL_PACKET_HDR_FORMAT_STR + f"{len(self.payload)}s"
 
-        packed = struct.pack(format_str,
-                             self.header.delim,
-                             self.header.msg_id,
-                             self.header.packet_id,
-                             self.header.packets_per_msg,
-                             self.header.payload_size,
-                             self.header.encoded,
-                             self.payload)
+        try:
+            packed = struct.pack(format_str,
+                                 self.header.delim,
+                                 self.header.msg_id,
+                                 self.header.packet_id,
+                                 self.header.packets_per_msg,
+                                 self.header.payload_size,
+                                 self.header.encoded,
+                                 self.payload)
+        except:  # Note: micropython does not have a struct.error exception type
+            raise SerialPacketException(
+                f"Failed to serialize packet. Header: {self.header}, Payload: {self.payload}")
+
         self.crc = binascii.crc32(packed)
         self._serialized_packet = bytes(
             bytearray(packed) + bytearray(self.crc.to_bytes(SERIAL_PACKET_CRC_SIZE_BYTES, "little"))
@@ -148,7 +153,7 @@ class SerialPacket():
         payload_idx = header_size
         crc_idx = payload_idx + header.payload_size
         payload = data[payload_idx:crc_idx]
-        expected_crc = int.from_bytes(data[crc_idx: crc_idx + 4], "little")
+        expected_crc = int.from_bytes(data[crc_idx: crc_idx + SERIAL_PACKET_CRC_SIZE_BYTES], "little")
         packet = cls(payload, header.msg_id, header.packet_id, header.packets_per_msg, header.encoded)
 
         # Check crc
