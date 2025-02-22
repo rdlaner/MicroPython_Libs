@@ -1,4 +1,9 @@
 """Serial Protocol Implementation"""
+# TODO: This protocol doesn't actually do any any framing, it's assuming that it receives
+#       SerialPackets because it sends SerialPackets. This works fine when the underlaying
+#       transport supports this assumption, but would break for a transport like UART.
+#       In those cases, perhaps the best option is to add another transport, eg. SerialTransport,
+#       that knows what a SerialPacket is, does the right framing, etc.
 # TODO: Could use ctypes Union to reduce SerialPacket header size.
 
 # Standard imports
@@ -10,12 +15,13 @@ from collections import namedtuple
 from math import ceil
 from micropython import const
 try:
-    from typing import List
+    from typing import List, Optional
 except ImportError:
     pass
 
 # Third party imports
 from mp_libs import logging
+from mp_libs.collections import defaultdict
 from mp_libs.protocols import InterfaceProtocol
 
 # Local imports
@@ -34,7 +40,7 @@ SERIAL_PACKET_CRC_SIZE_BYTES = const(4)
 SERIAL_PACKET_META_DATA_SIZE_BYTES = SERIAL_PACKET_HDR_SIZE_BYTES + SERIAL_PACKET_CRC_SIZE_BYTES
 
 # Globals
-logger = logging.getLogger("serial-protocols")
+logger: logging.Logger = logging.getLogger("serial-protocols")
 logger.setLevel(config["logging_level"])
 SerialPacketHeader = namedtuple("SerialPacketHeader",
                                 ("delim",
@@ -105,7 +111,7 @@ class SerialPacket():
                                  self.header.encoded,
                                  self.payload)
         except:  # Note: micropython does not have a struct.error exception type
-            raise SerialPacketException(
+            raise SerialPacketException(  # pylint: disable=raise-missing-from
                 f"Failed to serialize packet. Header: {self.header}, Payload: {self.payload}")
 
         self.crc = binascii.crc32(packed)
@@ -139,9 +145,9 @@ class SerialPacket():
             header = SerialPacketHeader(*struct.unpack(SERIAL_PACKET_HDR_FORMAT_STR, header_data))
         except RuntimeError as exc:
             buf = io.StringIO()
-            sys.print_exception(exc, buf)
-            raise SerialPacketException(
-                f"Failed to deserialize packet header: {header_data}\nexc: {buf.getvalue()}")
+            sys.print_exception(exc, buf)  # type: ignore
+            raise SerialPacketException(  # pylint: disable=raise-missing-from
+                f"Failed to deserialize packet header: {header_data}\nexc: {buf.getvalue()}")  # type: ignore
 
         # Validate header
         if header.delim != SERIAL_PACKET_DELIM:
@@ -181,28 +187,28 @@ class SerialMessage():
     |------------------- MSG X -------------------|
     Packet 0 | Packet 1 | Packet 2 | ... | Packet X
     """
-    msg_id = 0
+    _global_msg_id_counter: int = 0
 
-    def __init__(self, data, mtu_size_bytes: int, msg_id: int = None) -> None:
+    def __init__(self, data: Optional[bytes] = None, msg_id: Optional[int] = None) -> None:
         """Not intended to be initialized directly. Users should use one of the create classmethods.
 
         Args:
             data (generic): Msg data.
-            mtu_size_bytes (int): Max size of each SerialPacket.
             msg_id (int, optional): Msg identifier. If none, will increment from static count.
         """
-        self.data = data
-        self.mtu_size_bytes = mtu_size_bytes
-        self.msg_id = msg_id if msg_id else self._get_and_increment_msg_id()
-        self.packets = []
+        self._data: bytearray = bytearray(data) if data is not None else bytearray()
+        self._packets: List[SerialPacket] = []
+        self._msg_id = msg_id
+        self._next_packet_id = 0
         self._iter_idx = 0
+        self._complete = False
 
     def __iter__(self):
         return self
 
     def __next__(self):
-        if self._iter_idx < len(self.packets):
-            packet = self.packets[self._iter_idx]
+        if self._iter_idx < len(self._packets):
+            packet = self._packets[self._iter_idx]
             self._iter_idx += 1
             return packet
         else:
@@ -214,13 +220,104 @@ class SerialMessage():
             "SerialMessage does not support direct instantiation. Use factory classmethods.")
 
     def __repr__(self) -> str:
-        return "\n".join(str(packet) for packet in self.packets)
+        return "\n".join(str(packet) for packet in self._packets)
 
-    def _get_and_increment_msg_id(self) -> int:
-        msg_id = SerialMessage.msg_id
-        SerialMessage.msg_id = (msg_id + 1) % SERIAL_MSG_ID_MAX
+    @property
+    def data(self):
+        """Returns data contained by the SerialMessage.
 
-        return msg_id
+        Returns:
+            Data
+        """
+        if self._data is None:
+            return None
+
+        if self._packets[0].header.encoded:
+            return self._data.decode("utf-8")
+
+        return bytes(self._data)
+
+    @property
+    def msg_id(self) -> Optional[int]:
+        """Returns Msg ID for this message."""
+        return self._msg_id
+
+    @property
+    def packets(self) -> List[SerialPacket]:
+        """Returns list of packets held by this serial message."""
+        return self._packets
+
+    def add_packet(self, packet: SerialPacket, deepcopy: bool = False) -> bool:
+        """Supports adding packets to a SerialMessage in order to construct a full message
+        incrementally.
+
+        Args:
+            packet (SerialPacket): Packet to add to message.
+            deepcopy (bool, optional): Create a deep copy of the packet added. Defaults to False.
+
+        Raises:
+            SerialMessageException: Attempted to add a new packet to an already completed msg
+            SerialMessageException: Attempted to add packet with different message ID
+            SerialMessageException: Attempted to add packet with out of order packet ID
+            SerialMessageException: Attempted to add packet with different packets per msg value
+
+        Returns:
+            bool: True if full message is complete, False otherwise.
+        """
+        # Check if message is already completed
+        if self._complete:
+            raise SerialMessageException(
+                f"Attempted to add a new packet to an already completed msg.\n"
+                f"Current msg ID:    {self._msg_id}\n"
+                f"New packet msg ID: {packet.header.msg_id}"
+            )
+
+        # Check msg ID
+        if self._msg_id is None:
+            self._msg_id = packet.header.msg_id
+        elif self._msg_id != packet.header.msg_id:
+            raise SerialMessageException(
+                f"Attempted to add packet with different message ID\n"
+                f"Expected: {self._msg_id}\n"
+                f"Actual:   {packet.header.msg_id}"
+            )
+
+        # Check packet ID
+        if self._next_packet_id == packet.header.packet_id:
+            self._next_packet_id += 1
+        else:
+            raise SerialMessageException(
+                f"Attempted to add packet with out of order packet ID\n"
+                f"Expected: {self._next_packet_id}\n"
+                f"Actual:   {packet.header.packet_id}"
+            )
+
+        # Check packets per msg
+        if self._packets and self._packets[0].header.packets_per_msg != packet.header.packets_per_msg:
+            raise SerialMessageException(
+                f"Attempted to add packet with different packets per msg value\n"
+                f"Expected: {self.packets[0].header.packets_per_msg}"
+                f"Actual:   {packet.header.packets_per_msg}"
+            )
+
+        # Add packet data to msg
+        self._data.extend(packet.payload)
+        if deepcopy:
+            self._packets.append(SerialPacket(
+                packet.payload,
+                packet.header.msg_id,
+                packet.header.packet_id,
+                packet.header.packets_per_msg,
+                packet.header.encoded
+            ))
+        else:
+            self._packets.append(packet)
+
+        # Check if msg is complete
+        if len(self._packets) == self._packets[0].header.packets_per_msg:
+            self._complete = True
+
+        return self._complete
 
     def encode(self) -> bytes:
         """Return an encoded copy of the SerialMessage's data using "utf-8" encoding.
@@ -236,17 +333,53 @@ class SerialMessage():
 
         return str(self.data).encode("utf-8")
 
+    def is_msg_complete(self) -> bool:
+        """Checks if this message is completed, ie. it contains all its component packets.
+
+        Returns:
+            bool: True if message is complete, False otherwise.
+        """
+        return self._complete
+
     @classmethod
-    def create_msg_from_packets(cls, packets: list[SerialPacket]) -> "SerialMessage":
+    def _get_and_increment_msg_id(cls) -> int:
+        msg_id = cls._global_msg_id_counter
+        cls._global_msg_id_counter = (msg_id + 1) % SERIAL_MSG_ID_MAX
+
+        return msg_id
+
+    @classmethod
+    def create_msg_empty(cls, msg_id: Optional[int] = None) -> "SerialMessage":
+        """Creates an empty serial message.
+
+        Args:
+            msg_id (Optional[int], optional): Message ID to start empty message with. Defaults to None.
+
+        Returns:
+            SerialMessage: New SerialMessage instance.
+        """
+        msg = object.__new__(cls)
+        msg.__init__(data=None, msg_id=msg_id)  # pylint: disable=unnecessary-dunder-call
+
+        return msg
+
+    @classmethod
+    def create_msg_from_packets(
+        cls, packets: list[SerialPacket], check: bool = True, deepcopy: bool = False
+    ) -> "SerialMessage":
         """Creates a new SerialMessage from a list of SerialPackets.
 
         Note: MTU size is chosen based on size of largest SerialPacket.
 
         Args:
             packets (list[SerialPacket]): 1 or more SerialPackets.
+            check (bool): Perform packet checks. Will throw if errors found.
+            deepcopy (bool): Perform deepcopy of packets into new msg.
 
         Raises:
             SerialMessageException: List of SerialPackets cannot be empty.
+            SerialMessageException: Not enough packets for a msg.
+            SerialMessageException: Mismatching msg ID's.
 
         Returns:
             SerialMessage: New SerialMessage.
@@ -254,23 +387,30 @@ class SerialMessage():
         if not packets:
             raise SerialMessageException("Can't create msg from empty list of packets")
 
-        # Extract data from packets
-        mtu_size_bytes = max(len(packet.serialize()) for packet in packets)
         msg_id = packets[0].header.msg_id
-        data = bytearray()
-        for packet in packets:
-            data.extend(packet.payload)
+        if check:
+            # Check that we have enough packets to make up a message
+            packets_per_msg = packets[0].header.packets_per_msg
+            if packets_per_msg > len(packets):
+                raise SerialMessageException(
+                    f"Not enough packets to build the full message\n"
+                    f"Expected: {packets[0].header.packets_per_msg}\n"
+                    f"Actual:   {len(packets)}"
+                )
 
-        # Decode data, if appropriate
-        if packets[0].header.encoded:
-            data = data.decode("utf-8")
-        else:
-            data = bytes(data)
+            # Check that all packets comprising an entire message are present
+            for i in range(1, packets_per_msg):
+                if msg_id != packets[i].header.msg_id:
+                    # Since enough packets exist in the buffer, if the first contiguous set of packets
+                    # do not all have the same msg_id, then that means we must have dropped one
+                    # somewhere.
+                    raise SerialMessageException(
+                        "Received incomplete msg with mismatching msg ID's. Missing one or more packets.")
 
-        # Create new SerialMessage
-        msg = object.__new__(cls)
-        msg.__init__(data, mtu_size_bytes, msg_id)  # pylint: disable=unnecessary-dunder-call
-        msg.packets = list(packets)  # Copies the whole list and not just a reference
+        # Start with an empty msg and add in each packet
+        msg = SerialMessage.create_msg_empty(msg_id=msg_id)
+        for pkt in packets:
+            msg.add_packet(pkt, deepcopy=deepcopy)
 
         return msg
 
@@ -297,19 +437,17 @@ class SerialMessage():
         if mtu_size_bytes <= SERIAL_PACKET_META_DATA_SIZE_BYTES:
             raise SerialMessageException("MTU size is too small")
 
-        # Initialize a new SerialMessage
-        msg = object.__new__(cls)
-        msg.__init__(data, mtu_size_bytes)  # pylint: disable=unnecessary-dunder-call
-
         # Encode data (if appropriate)
         if isinstance(data, (bytearray, bytes)):
             encoded_data = bytes(data)
             encoded = False
         else:
-            encoded_data = msg.encode()
+            encoded_data = str(data).encode()
             encoded = True
 
-        # Build array of packets from encoded data
+        # Start with an empty msg and add in each newly created packet
+        msg_id = cls._get_and_increment_msg_id()
+        msg = SerialMessage.create_msg_empty(msg_id=msg_id)
         num_packets = ceil(len(encoded_data) / (mtu_size_bytes - SERIAL_PACKET_META_DATA_SIZE_BYTES))
         packet_id = 0
         payload_len = mtu_size_bytes - SERIAL_PACKET_META_DATA_SIZE_BYTES
@@ -317,10 +455,10 @@ class SerialMessage():
             start = i * payload_len
             end = start + payload_len
             packet_data = encoded_data[start:end]
-            packet = SerialPacket(packet_data, msg.msg_id, packet_id, num_packets, encoded)
+            packet = SerialPacket(packet_data, msg_id, packet_id, num_packets, encoded)
             packet_id += 1
 
-            msg.packets.append(packet)
+            msg.add_packet(packet)
 
         return msg
 
@@ -331,112 +469,20 @@ class SerialProtocol(InterfaceProtocol):
     def __init__(self,
                  transport: InterfaceProtocol,
                  mtu_size_bytes: int = DEFAULT_SERIAL_MESSAGE_MTU_SIZE_BYTES) -> None:
-        self.transport = transport
-        self.mtu_size_bytes = mtu_size_bytes
-        self.curr_msg_id = None
-        self.next_packet_id = 0
-        self.cached_serial_packets = []
-
-    def _extract_msg(self) -> "SerialMessage":
-        """Extract a SerialMessage from the cached SerialPackets.
-
-        If enough SerialPackets are cached, this function will construct a SerialMessage from
-        the SerialPackets starting from the beginning of the cache.
-        Once constructed, the constituent SerialPackets will be removed from the cache.
-
-        Raises:
-            SerialMessageException: Received incomplete SerialMessage. Missing one or more packets.
-
-        Returns:
-            SerialMessage: A new SerialMessage if enough packets are cached, otherwise None.
-        """
-        if not self.cached_serial_packets:
-            return None
-
-        # Check that we have enough packets to make up a message
-        packets_per_msg = self.cached_serial_packets[0].header.packets_per_msg
-        if packets_per_msg > len(self.cached_serial_packets):
-            return None
-
-        # Check that all packets comprising an entire message are present
-        msg_id = self.cached_serial_packets[0].header.msg_id
-        for i in range(1, packets_per_msg):
-            if msg_id != self.cached_serial_packets[i].header.msg_id:
-                # Since enough packets exist in the buffer, if the first contiguous set of packets
-                # do not all have the same msg_id, then that means we must have dropped one
-                # somewhere.
-                # Therefore, clear cache of all packets of that msg_id.
-                self.cached_serial_packets = self.cached_serial_packets[i:]
-                raise SerialMessageException(
-                    "Received incomplete SerialMessage. Missing one or more packets.")
-
-        # Construct and return serial message
-        serial_packets = []
-        for _ in range(packets_per_msg):
-            serial_packets.append(self.cached_serial_packets.pop(0))
-
-        return SerialMessage.create_msg_from_packets(serial_packets)
-
-    def _process_packet(self, packet: bytes) -> None:
-        """Process serialized SerialPacket received from transport.
-
-        This function will deserialize a SerialPacket and use the packet's header information to
-        ensure all packets comprising a SerialMessage are received correctly.
-        If not all packets are processed before the msg_id changes or if a packet is missed or if
-        packets are received out of order, it will log an error.
-        All successfully processed packets are cached so that they can be used to construct a
-        SerialMessage via `_extract_msg`.
-        This function relies on `_extract_msg` to check if enough packets are present for a msg.
-        To be called on each newly received packet.
-
-        Args:
-            packet (bytes): Serialized SerialPacket received from transport.
-
-        Raises:
-            SerialPacketException: Received new msg id before finishing current
-            SerialPacketException: Received out of order packet
-        """
-        # Construct serial packet
-        serial_packet = SerialPacket.deserialize(packet)
-        logger.debug(f"{serial_packet.header}")
-
-        # Check msg ID
-        if not self.curr_msg_id:
-            self.curr_msg_id = serial_packet.header.msg_id
-        elif self.curr_msg_id != serial_packet.header.msg_id:
-            # Reset packet processing with latest packet
-            self.curr_msg_id = serial_packet.header.msg_id
-            self.next_packet_id = serial_packet.header.packet_id
-            logger.error("".join(("Received new msg id before finishing current.\n",
-                                  f"Expected: {self.curr_msg_id}.\n",
-                                  f"Actual: {serial_packet.header.msg_id}\n")))
-
-        # Check packet ID
-        if self.next_packet_id == serial_packet.header.packet_id:
-            self.next_packet_id += 1
-        else:
-            # Reset packet processing with latest packet
-            self.next_packet_id = serial_packet.header.packet_id + 1
-            logger.error("".join(("Received out of order packet.\n",
-                                  f"Expected: {self.next_packet_id}.\n",
-                                  f"Actual: {serial_packet.header.packet_id}\n")))
-
-        # Check if last packet
-        if serial_packet.header.packet_id == serial_packet.header.packets_per_msg - 1:  # Minus 1 since 0-based
-            self.curr_msg_id = None
-            self.next_packet_id = 0
-
-        self.cached_serial_packets.append(serial_packet)
+        self.metrics = defaultdict(int)
+        self._transport = transport
+        self._mtu_size_bytes = mtu_size_bytes
+        self._curr_msg = SerialMessage.create_msg_empty()
 
     @property
     def mtu_size(self):
         """Return current MTU size in bytes"""
-        return self.mtu_size_bytes
+        return self._mtu_size_bytes
 
     @mtu_size.setter
     def mtu_size(self, value):
         """Set MTU size in bytes"""
-        self.mtu_size_bytes = value
+        self._mtu_size_bytes = value
 
     def connect(self, **kwargs) -> bool:
         """Connect underlying transport.
@@ -444,7 +490,7 @@ class SerialProtocol(InterfaceProtocol):
         Returns:
             bool: True if connected, False if failed to connect.
         """
-        return self.transport.connect(**kwargs)
+        return self._transport.connect(**kwargs)
 
     def disconnect(self, **kwargs) -> bool:
         """Disconnect underlying transport.
@@ -452,10 +498,10 @@ class SerialProtocol(InterfaceProtocol):
         Returns:
             bool: True if disconnected, False if failed to disconnect.
         """
-        return self.transport.disconnect(**kwargs)
+        return self._transport.disconnect(**kwargs)
 
     def is_connected(self) -> bool:
-        return self.transport.is_connected()
+        return self._transport.is_connected()
 
     def receive(self, rxed_data: list, **kwargs) -> bool:
         """Attempts to construct and return a SerialMessage payload.
@@ -473,34 +519,33 @@ class SerialProtocol(InterfaceProtocol):
         data_available = False
         rxed_packets = []
 
-        if self.transport.receive(rxed_packets):
-            data_available = True
-
-            # If the received packet is a serial packet, perform processing.
-            # If it isn't, just pass it on up, let the upper layers handle it.
+        if self._transport.receive(rxed_packets):
             for packet in rxed_packets:
-                if packet.startswith(SERIAL_PACKET_DELIM):
-                    try:
-                        self._process_packet(packet)
-                    except SerialPacketException as exc:
-                        logger.exception("Failed processing SerialPacket", exc_info=exc)
-                else:
-                    rxed_data.append(packet)
-
-            # Extract all fully formed serial messages, if enough packets have been received
-            while True:
-                try:
-                    msg = self._extract_msg()
-                except SerialMessageException as exc:
-                    logger.exception("Failed extracting SerialMessage", exc_info=exc)
+                # Verify this is a serial packet
+                if not packet.startswith(SERIAL_PACKET_DELIM):
+                    self.metrics["skipped_packets"] += 1
                     continue
 
-                # Extract msg payload from any SerialMessages.
-                if msg:
+                # Deserialize
+                try:
+                    serial_packet = SerialPacket.deserialize(packet)
+                except SerialPacketException as exc:
+                    logger.exception("Failed deserializing SerialPacket", exc_info=exc)
+                    self.metrics["invalid_packets"] += 1
+                    continue
+
+                # Build up current serial message
+                try:
+                    self._curr_msg.add_packet(serial_packet)
+                except SerialMessageException as exc:
+                    logger.exception("Failed adding packet to SerialMessage", exc_info=exc)
+                    self.metrics["invalid_packets"] += 1
+
+                # Return data if a full msg has been received
+                if self._curr_msg.is_msg_complete():
+                    rxed_data.append(self._curr_msg.data)
                     data_available = True
-                    rxed_data.append(msg.data)
-                else:
-                    break
+                    self._curr_msg = SerialMessage.create_msg_empty()
 
         return data_available
 
@@ -510,7 +555,7 @@ class SerialProtocol(InterfaceProtocol):
         Returns:
             bool: True if recovery succeeded, False if it failed.
         """
-        return self.transport.recover(**kwargs)
+        return self._transport.recover(**kwargs)
 
     def scan(self, **kwargs) -> List:
         """Performs scan operation.
@@ -520,7 +565,7 @@ class SerialProtocol(InterfaceProtocol):
         Returns:
             List: Result of scan operation.
         """
-        return self.transport.scan(**kwargs)
+        return self._transport.scan(**kwargs)
 
     def send(self, msg, **kwargs) -> bool:
         """Synchronously send data using the SerialProtocol.
@@ -538,7 +583,7 @@ class SerialProtocol(InterfaceProtocol):
         if isinstance(msg, SerialMessage):
             serial_msg = msg
         else:
-            serial_msg = SerialMessage.create_msg_from_data(msg, self.mtu_size_bytes)
+            serial_msg = SerialMessage.create_msg_from_data(msg, self._mtu_size_bytes)
 
         return self.send_serial_msg(serial_msg)
 
@@ -556,6 +601,6 @@ class SerialProtocol(InterfaceProtocol):
         success = True
 
         for packet in serial_msg:
-            success = success and self.transport.send(packet.serialize())
+            success = success and self._transport.send(packet.serialize())
 
         return success
