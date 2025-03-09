@@ -64,16 +64,20 @@ class EpnCmds(Enum):
         return cls._to_str_lut[cmd]
 
 
+class EspnowError(Exception):
+    """Custom exception for general Espnow errors"""
+
+
 class EspnowPacketError(Exception):
-    pass
+    """Custom exception for EspnowPacket errors"""
 
 
 class TimeoutError(Exception):
-    pass
+    """Custom exception for Espnow timeout errors"""
 
 
 class ScanError(Exception):
-    pass
+    """Custom exception for Espnow scan errors"""
 
 
 class EspnowPacket():
@@ -88,6 +92,9 @@ class EspnowPacket():
     Otherwise, the packet is meant for processing at the espnow_protocol layer.
     """
     def __init__(self, cmd: Union[EpnCmds, int], payload: bytes = b"") -> None:
+        if not EpnCmds.contains(cmd):
+            raise EspnowPacketError(f"{cmd} is not a valid EpnCmds cmd")
+
         self.header = EspnowPacketHeader(
             delim=EPN_PACKET_DELIM,
             cmd=cmd,
@@ -99,27 +106,47 @@ class EspnowPacket():
 
         self._serialize()
 
+    def __eq__(self, other: "EspnowPacket") -> bool:
+        if (
+            isinstance(other, EspnowPacket) and
+            self.header == other.header and
+            self.cmd == other.cmd and
+            self.payload == other.payload and
+            self._serialized_packet == other._serialized_packet
+        ):
+            return True
+
+        return False
+
     def __len__(self) -> int:
         return len(self._serialized_packet)
 
+    def __str__(self) -> str:
+        return f"Cmd: {self.cmd}, Payload: {self.payload}"
+
     def _serialize(self) -> None:
         """Serializes this packet instance and saves it to self._serialized_packet"""
-        if self.payload:
-            format_str = EPN_PACKET_HDR_FORMAT_STR + f"{len(self.payload)}s"
-            self._serialized_packet = struct.pack(
-                format_str,
-                self.header.delim,
-                self.header.cmd,
-                self.header.payload_size,
-                self.payload
-            )
-        else:
-            format_str = EPN_PACKET_HDR_FORMAT_STR
-            self._serialized_packet = struct.pack(
-                format_str,
-                self.header.delim,
-                self.header.cmd,
-                self.header.payload_size
+        try:
+            if self.payload:
+                format_str = EPN_PACKET_HDR_FORMAT_STR + f"{len(self.payload)}s"
+                self._serialized_packet = struct.pack(
+                    format_str,
+                    self.header.delim,
+                    self.header.cmd,
+                    self.header.payload_size,
+                    self.payload
+                )
+            else:
+                format_str = EPN_PACKET_HDR_FORMAT_STR
+                self._serialized_packet = struct.pack(
+                    format_str,
+                    self.header.delim,
+                    self.header.cmd,
+                    self.header.payload_size
+                )
+        except:  # Note: micropython does not have a struct.error exception type
+            raise EspnowPacketError(
+                f"Failed to serialize packet. Header: {self.header}, Payload: {self.payload}"
             )
 
     @classmethod
@@ -305,12 +332,12 @@ class EspnowProtocol(InterfaceProtocol):
     def receive(self, rxed_data: list, **kwargs) -> bool:
         """Receives all available espnow packets and appends them to the `rxed_data` list.
 
-        Each element of received data added to the `rxed_data` list will be a tuple:
-         * (Sender MAC address, Data)
-
         Args:
             rxed_data (list): Received espnow packets, if any.
             recover (bool, optional): Attempt recovery if loop function fails.
+
+        Raises:
+            EspnowError: Failed to recover from espnow receive error.
 
         Returns:
             bool: True if data was received, False if no data available.
@@ -330,19 +357,21 @@ class EspnowProtocol(InterfaceProtocol):
                         break
                 except (OSError, ValueError) as exc:
                     logger.exception("Failed receiving espnow packet", exc_info=exc)
+                    msg = None
                     data_available = False
                     buf = io.StringIO()
                     sys.print_exception(exc, buf)  # type: ignore
                     if recover:
                         if not self.recover():
-                            raise RuntimeError(f"Failed to recover after espnow receive failure.\n{buf.getvalue()}")
+                            raise EspnowError(f"Failed to recover after espnow receive failure.\n{buf.getvalue()}")
                     else:
-                        raise RuntimeError(f"Did not attempt recovery.\n{buf.getvalue()}")
+                        raise EspnowError(f"Did not attempt recovery.\n{buf.getvalue()}")
 
                 # Process espnow msg
-                packet = EspnowPacket.deserialize(msg)  # type: ignore , We protect against this by checking if mac is None.
-                if payload := self.process_packet(packet):
-                    rxed_data.append(payload)
+                if msg is not None:
+                    packet = EspnowPacket.deserialize(msg)  # type: ignore , We protect against this by checking if mac is None.
+                    if payload := self.process_packet(packet):
+                        rxed_data.append(payload)
             else:
                 break
 
@@ -361,11 +390,25 @@ class EspnowProtocol(InterfaceProtocol):
 
         del self.wifi
         del self.epn
+
+        self.epn = espnow.ESPNow()
         self._configure(peers, self.hostname, self.channel, self.timeout_ms)
 
         return True
 
     def scan(self, **kwargs) -> List:
+        """Performs scan req/resp cycle over each wifi channel until a valid channel is found, if any.
+
+        NOTE: This process does not preserve any non-scan messages received during the scanning
+              process; they will be dropped.
+
+        Raises:
+            EspnowError: Failed to update channel
+            ScanError: Failed to find peer device on any channel
+
+        Returns:
+            List: List containing first channel with valid scan response.
+        """
         timeout_ms = kwargs.get("timeout", DEFAULT_SCAN_RESP_TIMEOUT_MS)
         channel_found = False
         channel = 0
@@ -374,7 +417,7 @@ class EspnowProtocol(InterfaceProtocol):
             channel += 1
             logger.debug(f"Changing channel to: {channel}")
             if not self.update_channel(channel):
-                raise RuntimeError(f"Failed to update espnow/wifi channel to {channel}")
+                raise EspnowError(f"Failed to update espnow/wifi channel to {channel}")
 
             # Send scan request
             logger.debug("Sending SCAN REQ")
@@ -409,17 +452,20 @@ class EspnowProtocol(InterfaceProtocol):
         Args:
             msg (generic): Data to send.
 
+        Raises:
+            EspnowError: Message length is greater than max packet size.
+
         Returns:
             bool: True if send succeeded, False if it failed.
         """
         if isinstance(msg, EspnowPacket):
             if len(msg) > EPN_PACKET_MAX_SIZE:
-                raise RuntimeError(f"espnow msg len is greater than {EPN_PACKET_MAX_SIZE} bytes: {len(msg)}")
+                raise EspnowError(f"espnow msg len is greater than {EPN_PACKET_MAX_SIZE} bytes: {len(msg)}")
 
             epn_packet = msg
         else:
             if len(msg) + EPN_PACKET_HDR_SIZE_BYTES > EPN_PACKET_MAX_SIZE:
-                raise RuntimeError(
+                raise EspnowError(
                     f"espnow msg len must be <= EPN_PACKET_MAX_SIZE - EPN_PACKET_HDR_SIZE_BYTES: {EPN_PACKET_MAX_SIZE - EPN_PACKET_HDR_SIZE_BYTES}")
 
             epn_packet = EspnowPacket(EpnCmds.CMD_PASS, msg)
