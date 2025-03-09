@@ -1,9 +1,6 @@
 """Serial Protocol Implementation"""
-# TODO: This protocol doesn't actually do any any framing, it's assuming that it receives
-#       SerialPackets because it sends SerialPackets. This works fine when the underlaying
-#       transport supports this assumption, but would break for a transport like UART.
-#       In those cases, perhaps the best option is to add another transport, eg. SerialTransport,
-#       that knows what a SerialPacket is, does the right framing, etc.
+# TODO: Optimize how we use _cached_data. Probably could allocate max size upfront based on the
+#       mtu_size and then just use a memorview over the top of it.
 # TODO: Could use ctypes Union to reduce SerialPacket header size.
 
 # Standard imports
@@ -139,11 +136,10 @@ class SerialPacket():
             SerialPacket: New instance of SerialPacket.
         """
         # Extract header
-        header_size = struct.calcsize(SERIAL_PACKET_HDR_FORMAT_STR)
-        header_data = data[0:header_size]
+        header_data = data[0:SERIAL_PACKET_HDR_SIZE_BYTES]
         try:
             header = SerialPacketHeader(*struct.unpack(SERIAL_PACKET_HDR_FORMAT_STR, header_data))
-        except RuntimeError as exc:
+        except ValueError as exc:
             buf = io.StringIO()
             sys.print_exception(exc, buf)  # type: ignore
             raise SerialPacketException(  # pylint: disable=raise-missing-from
@@ -154,9 +150,11 @@ class SerialPacket():
             raise SerialPacketException(f"Invalid packet header delim: {header.delim}")
         if header.msg_id >= SERIAL_MSG_ID_MAX:
             raise SerialPacketException(f"Invalid packet header msg id: {header.msg_id}")
+        if SERIAL_PACKET_META_DATA_SIZE_BYTES + header.payload_size != len(data):
+            raise SerialPacketException(f"Unexpected/extra data when deserializing packet: {data}")
 
         # Build new SerialPacket
-        payload_idx = header_size
+        payload_idx = SERIAL_PACKET_HDR_SIZE_BYTES
         crc_idx = payload_idx + header.payload_size
         payload = data[payload_idx:crc_idx]
         expected_crc = int.from_bytes(data[crc_idx: crc_idx + SERIAL_PACKET_CRC_SIZE_BYTES], "little")
@@ -473,6 +471,76 @@ class SerialProtocol(InterfaceProtocol):
         self._transport = transport
         self._mtu_size_bytes = mtu_size_bytes
         self._curr_msg = SerialMessage.create_msg_empty()
+        self._cached_data = bytearray()
+
+    def _parse_packets(self, rxed_data: List) -> List:
+        # Collect received data and append it to any existing cached data
+        self._cached_data.extend(b"".join(rxed_data))
+        cache = memoryview(self._cached_data)
+
+        # Iterate over cache marking the location of each detected delimiter.
+        # It is possible, however, that a delim is corrupted or we have a partial delimiter at
+        # the end of the cache. Therefore, we still need to extract the header and calc the
+        # packet size.
+        delim_idxs = []
+        for i, elem in enumerate(cache):
+            if (
+                elem == SERIAL_PACKET_DELIM[0] and
+                cache[i:i + len(SERIAL_PACKET_DELIM)] == SERIAL_PACKET_DELIM
+            ):
+                delim_idxs.append(i)
+
+        # Iterate over delim indices and construct packets
+        rxed_packets = []
+        final_packet = False
+        for i, idx in enumerate(delim_idxs):
+            if idx == delim_idxs[-1]:
+                final_packet = True
+
+            # Extract packet header
+            header_data = cache[idx:idx + SERIAL_PACKET_HDR_SIZE_BYTES]
+            try:
+                header = SerialPacketHeader(*struct.unpack(SERIAL_PACKET_HDR_FORMAT_STR, header_data))
+            except Exception:
+                logger.debug("Received partial serial packet header")
+                self.metrics["partial_packets"] += 1
+                if final_packet:
+                    # del self._cached_data[:idx]
+                    cache = cache[idx:]
+                continue
+
+            packet_size = SERIAL_PACKET_META_DATA_SIZE_BYTES + header.payload_size
+
+            # Verify packet size
+            if final_packet and packet_size > len(cache) - idx:
+                logger.debug("Received partial serial packet")
+                self.metrics["partial_packets"] += 1
+                # del self._cached_data[:idx]
+                cache = cache[idx:]
+                continue
+
+            # Attempt to deserialize the data chunk
+            try:
+                packet = SerialPacket.deserialize(bytes(cache[idx:idx + packet_size]))
+            except SerialPacketException as exc:
+                logger.exception("Failed deserializing SerialPacket", exc_info=exc)
+                self.metrics["invalid_packets"] += 1
+                if final_packet:
+                    # del self._cached_data[:idx]
+                    cache = cache[idx:]
+                continue
+
+            # Received a full, valid packet
+            rxed_packets.append(packet)
+            if final_packet:
+                # Don't clear the entire cache as there could be a partial delimiter still remaining
+                # del self._cached_data[:idx + packet_size]
+                cache = cache[idx + packet_size:]
+
+        # Reconcile cache memoryview with actual cache
+        self._cached_data = bytearray(cache)
+
+        return rxed_packets
 
     @property
     def mtu_size(self):
@@ -517,26 +585,16 @@ class SerialProtocol(InterfaceProtocol):
             bool: True if data is ready and returned. False if no data available.
         """
         data_available = False
-        rxed_packets = []
+        serial_data = []
 
-        if self._transport.receive(rxed_packets):
+        if self._transport.receive(serial_data, **kwargs):
+            # Parse any fully received packets
+            rxed_packets = self._parse_packets(serial_data)
+
+            # Build up current serial message
             for packet in rxed_packets:
-                # Verify this is a serial packet
-                if not packet.startswith(SERIAL_PACKET_DELIM):
-                    self.metrics["skipped_packets"] += 1
-                    continue
-
-                # Deserialize
                 try:
-                    serial_packet = SerialPacket.deserialize(packet)
-                except SerialPacketException as exc:
-                    logger.exception("Failed deserializing SerialPacket", exc_info=exc)
-                    self.metrics["invalid_packets"] += 1
-                    continue
-
-                # Build up current serial message
-                try:
-                    self._curr_msg.add_packet(serial_packet)
+                    self._curr_msg.add_packet(packet)
                 except SerialMessageException as exc:
                     logger.exception("Failed adding packet to SerialMessage", exc_info=exc)
                     self.metrics["invalid_packets"] += 1

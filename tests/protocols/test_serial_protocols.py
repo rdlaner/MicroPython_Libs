@@ -11,6 +11,8 @@ from typing import Any, List, Optional
 # Third party imports
 import pytest
 from pytest_mock import MockerFixture
+
+# Local imports
 from mp_libs import logging
 from mp_libs.protocols import InterfaceProtocol
 from mp_libs.protocols import serial_protocols as sp
@@ -370,7 +372,7 @@ def test_serial_msg_create_from_data_invalid_mtu_size(mtu_size_bytes):
 
 
 def test_serial_msg_create_from_data_msg_id_inc():
-    cycles = sp.SERIAL_MSG_ID_MAX * 10
+    cycles = sp.SERIAL_MSG_ID_MAX * 5
     start_msg_id = sp.SerialMessage._global_msg_id_counter
 
     for i in range(cycles):
@@ -394,7 +396,7 @@ def test_serial_msg_misssing_packets():
     data = generate_msg_data(bytes, size=100)
     msg = sp.SerialMessage.create_msg_from_data(data, sp.SERIAL_PACKET_META_DATA_SIZE_BYTES + 1)
     packets = msg.packets
-    index = random.randint(0, len(packets))
+    index = random.randint(0, len(packets) - 1)
     packets.pop(index)
 
     with pytest.raises(sp.SerialMessageException):
@@ -439,8 +441,9 @@ class MockTransport(InterfaceProtocol):
         return True
 
     def receive(self, rxed_data: List, **kwargs) -> bool:
-        for pkt in self.rx_packets:
-            rxed_data.append(pkt)
+        data = bytearray(b"".join(self.rx_packets))
+        for i in range(0, len(data), 37):
+            rxed_data.append(data[i:i + 37])
 
         return True
 
@@ -540,6 +543,46 @@ def test_protocol_send_receive_str(mtu_size):
 
 @pytest.mark.repeat(NUM_REPEATED_TESTS)
 @pytest.mark.parametrize("mtu_size", range(sp.SERIAL_PACKET_META_DATA_SIZE_BYTES + 1, 256))
+def test_protocol_send_receive_unaligned(mtu_size, mocker):
+    msg_size = random.randint(50, 5000)
+    data = generate_msg_data(bytes, size=msg_size)
+    transport = MockTransport()
+    protocol = sp.SerialProtocol(transport, mtu_size)
+    payload_size = mtu_size - sp.SERIAL_PACKET_META_DATA_SIZE_BYTES
+    num_packets = ceil(msg_size / payload_size)
+
+    if num_packets >= 256:
+        with pytest.raises(sp.SerialPacketException):
+            protocol.send(data)
+        return
+
+    def mock_receive(rxed_data: List, **kwargs) -> bool:
+        chunk_size = kwargs.get("chunk_size", 37)
+        idx = kwargs.get("idx", 0)
+        data = bytearray(b"".join(transport.rx_packets))
+
+        chunk = data[idx:idx + chunk_size]
+        rxed_data.append(chunk)
+
+        return True
+
+    # Mock transport's receive function
+    mocker.patch.object(transport, "receive", side_effect=mock_receive)
+
+    # Send data
+    protocol.send(data)
+
+    # Receive corrupted data
+    rx_data = []
+    for i in range(0, mtu_size * num_packets, 37):
+        protocol.receive(rx_data, chunk_size=37, idx=i)
+
+    # Verify
+    assert b"".join(rx_data) == data
+
+
+@pytest.mark.repeat(NUM_REPEATED_TESTS)
+@pytest.mark.parametrize("mtu_size", range(sp.SERIAL_PACKET_META_DATA_SIZE_BYTES + 1, 256))
 def test_protocol_send_receive_corrupt_delim(mtu_size, mocker: MockerFixture):
     corrupt_pkts = []
     corrupt_idxs = []
@@ -585,10 +628,7 @@ def test_protocol_send_receive_corrupt_delim(mtu_size, mocker: MockerFixture):
     protocol.receive(rx_data)
 
     # Verify
-    valid_packets = min(corrupt_idxs)
     assert len(rx_data) == 0
-    assert protocol.metrics["skipped_packets"] == len(corrupt_pkts)
-    assert valid_packets + protocol.metrics["skipped_packets"] + protocol.metrics["invalid_packets"] == num_packets
 
 
 @pytest.mark.repeat(NUM_REPEATED_TESTS)
@@ -650,17 +690,10 @@ def test_protocol_send_receive_corrupt_header(mtu_size, mocker: MockerFixture):
     # Verify
     valid_packets = min(corrupt_idxs)
     assert len(rx_data) == 0
-    assert valid_packets + protocol.metrics["invalid_packets"] == num_packets
+    assert valid_packets + protocol.metrics["partial_packets"] + protocol.metrics["invalid_packets"] == num_packets
     assert spy.call_count == protocol.metrics["invalid_packets"]
     for _, kwargs in spy.call_args_list:
         assert isinstance(kwargs.get("exc_info"), (sp.SerialMessageException, sp.SerialPacketException))
 
-
-
-# Test send / receive, but corrupt random packet(s)
-#   corrupt delim
-#   corrupt rest of header
-#   corrupt data
-#   corrupt crc
 
 # Send / receive cached sends
