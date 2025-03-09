@@ -52,7 +52,7 @@ class MinIotMessage():
         }
 
     def __repr__(self) -> str:
-        return self.serialize().decode()
+        return f"topic: {self.topic}, msg: {self.msg}, sent_ts: {self.sent_ts}, received_ts: {self.received_ts}"
 
     @property
     def msg(self) -> str:
