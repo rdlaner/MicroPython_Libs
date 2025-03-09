@@ -10,6 +10,7 @@
 #
 # This version author: rdlaner
 # version: v0.1.0
+# pylint: disable=import-error, wrong-import-order
 
 """
 `micropython_scd4x`
@@ -28,14 +29,19 @@ Implementation Notes
 * `Adafruit SCD4X breakout board <https://www.adafruit.com/product/5187>`_
 
 ** Documentation **
-* The library is dervived from the adafruit CircuitPython version.
+* The library is derived from the adafruit CircuitPython version.
 * The adafruit version and documentation can be found at
 * https://github.com/adafruit/Adafruit_CircuitPython_SCD4X.git
 """
 # Standard imports
+import struct
 import time
 from machine import I2C
 from micropython import const
+try:
+    from typing import Tuple, Union
+except ImportError:
+    pass
 
 # Constants
 _SCD4X_DEFAULT_ADDR = const(0x62)
@@ -104,9 +110,9 @@ class SCD4X:
         self._crc_buffer = bytearray(2)
 
         # cached readings
-        self._temperature = None
-        self._relative_humidity = None
-        self._co2 = None
+        self._temperature: float = 0.0
+        self._relative_humidity: float = 0.0
+        self._co2: int = 0
 
         if stop_measurements:
             self.stop_periodic_measurement()
