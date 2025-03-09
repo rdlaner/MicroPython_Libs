@@ -115,7 +115,7 @@ class Formatter:
 
     def formatTime(self, datefmt, record):
         if hasattr(time, "strftime"):
-            return time.strftime(datefmt, time.localtime(record.dt))
+            return time.strftime(datefmt, record.dt)
 
         if record.is_time_sync:
             return f"{record.dt[0]}-{record.dt[1]:02d}-{record.dt[2]:02d} {record.dt[4]:02d}:{record.dt[5]:02d}:{record.dt[6]:02d}"
