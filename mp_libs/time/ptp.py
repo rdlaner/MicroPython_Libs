@@ -1,4 +1,6 @@
 """Basic Precision Time Protocol (PTP) implementation
+
+TODO: Consider options to make this async friendly.
 """
 # pylint: disable=raise-missing-from
 
@@ -11,7 +13,7 @@ from collections import namedtuple
 from machine import RTC        # pylint: disable=import-error,
 from micropython import const  # pylint: disable=import-error, wrong-import-order
 try:
-    from typing import Any, Callable, List, Tuple, Union
+    from typing import Any, Callable, List, Optional, Tuple, Union
 except ImportError:
     pass
 
@@ -377,7 +379,7 @@ def wait_for_msg(
     msg_parser: Callable[[Any], bytes],
     timeout_ms: int = DEFAULT_TIMEOUT_MSEC,
     **kwargs
-) -> Tuple[int, int]:
+) -> Tuple[Optional[int], Optional[int]]:
     """Wait for the specified message to be received.
 
     Args:
@@ -392,39 +394,43 @@ def wait_for_msg(
         PtpPacketError: PtpPacket contained unexpected message.
 
     Returns:
-        Tuple[int, int]: (payload, received timestamp)
+        Tuple[int, int]: (payload, received timestamp). Will be (None, None) if timed out.
     """
     logger.debug(f"Waiting for {PtpMsg.to_str(msg_type)}")
 
     transport_msgs = []
-    data_available = False
+    msg_found = False
+    rx_ts = None
+    payload = None
     start = time.ticks_ms()  # pylint: disable=no-member
 
-    while not data_available:
+    while not msg_found:
         if timeout_ms is not None and time.ticks_diff(time.ticks_ms(), start) > timeout_ms:  # pylint: disable=no-member
             raise TimeoutError(f"Timed out waiting for PTP message: {PtpMsg.to_str(msg_type)}.")
 
-        data_available = transport.receive(transport_msgs, kwargs=kwargs)
+        if not transport.receive(transport_msgs, kwargs=kwargs):
+            continue
 
-    rx_ts = rtc.now()
-    actual_msg_type = None
-    payload = None
-    packets = [msg_parser(msg) for msg in transport_msgs]
+        rx_ts = rtc.now()
+        actual_msg_type = None
+        packets = [msg_parser(msg) for msg in transport_msgs]
 
-    # Process packets until we find one that parses successfully
-    for pkt in packets:
-        try:
-            actual_msg_type, payload = parse_msg(pkt)
-        except PtpPacketError as exc:
-            logger.exception("PTP packet parsing failed. Skipping packet", exc_info=exc)
-        else:
-            break
+        # Process packets until we find one that parses successfully
+        for pkt in packets:
+            try:
+                actual_msg_type, payload = parse_msg(pkt)
+            except PtpPacketError as exc:
+                logger.exception("PTP packet parsing failed. Skipping packet", exc_info=exc)
+            else:
+                break
 
-    if actual_msg_type is None or payload is None:
-        raise PtpPacketError(f"wait_for_msg - Received data, but did not receive a valid PtpPacket: {packets}")
+        if actual_msg_type is None or payload is None:
+            raise PtpPacketError(f"wait_for_msg - Received data, but did not receive a valid PtpPacket: {packets}")
 
-    if actual_msg_type != msg_type:
-        raise PtpPacketError(f"Rx'ed unexpected msg. Expected: {msg_type}. Actual: {actual_msg_type}.")
+        if actual_msg_type != msg_type:
+            raise PtpPacketError(f"Rx'ed unexpected msg. Expected: {msg_type}. Actual: {actual_msg_type}.")
 
-    logger.debug(f"Rx'ed msg: {PtpMsg.to_str(msg_type)}, Payload: {payload}, TS: {rx_ts}")
+        msg_found = True
+        logger.debug(f"Rx'ed msg: {PtpMsg.to_str(msg_type)}, Payload: {payload}, TS: {rx_ts}")
+
     return (payload, rx_ts)
