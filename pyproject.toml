@@ -1,25 +1,32 @@
-[tool.poetry]
+[project]
 name = "micropython-libs"
 version = "0.1.0"
 description = "Custom libraries for MicroPython projects."
-authors = ["Dustin L <r.dustin.lane@gmail.com>"]
+authors = [
+  { name = "Dustin L", email = "r.dustin.lane@gmail.com" }
+]
 readme = "README.md"
+requires-python = ">=3.11,<4.0"
 
-[tool.poetry.dependencies]
-python = "^3.11"
-micropython-magic = "^0.10.2"
-micropython-esp32-esp32_generic_s3-stubs = "^1.22.0.post1"
-mpremote = "^1.20.0"
-esptool = "^4.6.2"
-autopep8 = "^2.0.4"
-pylint = "^3.3.0"
-ipytest = "^0.14.2"
-ipykernel = "^6.28.0"
-colorama = "^0.4.6"
-pytest-mock = "^3.14.0"
-pytest-repeat = "^0.9.3"
-pytest-xdist = "^3.6.1"
-pytest-timeout = "^2.3.1"
+dependencies = [
+  "mpremote>=1.23.0",
+  "esptool>=4.7.0",
+  "autopep8>=2.3.1",
+  "pylint>=2.17.5",
+  "micropython-magic>=0.10.2",
+  "micropython-esp32-esp32_generic_s3-stubs>=1.23.0.post1",
+  "ipykernel>=6.29.5",
+  "colorama>=0.4.6",
+  "ipytest>=0.14.2",
+  "pytest-mock>=3.14.0",
+  "pytest-repeat>=0.9.3",
+  "pytest-xdist>=3.6.1",
+  "pytest-timeout>=2.3.1",
+  "nbstripout (>=0.8.2,<0.9.0)"
+]
+
+[tool.poetry]
+package-mode = false
 
 [build-system]
 requires = ["poetry-core"]
