@@ -3,6 +3,12 @@
 TODO: Use specific exceptions instead of just RuntimeError everywhere
 TODO: Add support for thermistors
 TODO: Add support for alarms
+TODO: Instead of throwing, return None for these functions:
+            batt_voltage()
+            batt_charge()
+            batt_cycles()
+            batt_health()
+            batt_time_left()
 """
 # pylint: disable=import-error, wrong-import-order
 
@@ -120,7 +126,7 @@ class PowerFeather():
 
     def _init_charger(self, force: bool = False) -> None:
         if not force and self._is_charger_initialized():
-            logger.debug("Charger IC already initialized")
+            logger.info("Charger IC already initialized")
             return
 
         # Default initialization
@@ -152,7 +158,7 @@ class PowerFeather():
             return
 
         if not force and self._is_fuel_gauge_initialized():
-            logger.info("Fuel gauge already initialized")
+            logger.debug("Fuel gauge already initialized")
             return
 
         # Default initialization
@@ -219,7 +225,7 @@ class PowerFeather():
 
         self._charger.adc_setup(True, bq.ADC_RATE_ONESHOT, bq.ADC_RESOLUTION_10, False, False)
         time.sleep_ms(CHARGER_ADC_WAIT_TIME_MS)  # pylint: disable=no-member
-        logger.info("Charger ADC updated")
+        logger.debug("Charger ADC updated")
 
     @property
     def is_batt_configured(self) -> bool:
@@ -290,7 +296,7 @@ class PowerFeather():
         self._init_fuel_gauge()  # Will skip initialization if already initialized
 
         charge = self._fuel_gauge.batt_rsoc
-        logger.info(f"Estimated Batt Charge: {charge} %")
+        logger.debug(f"Estimated Batt Charge: {charge} %")
         return charge
 
     def batt_charging_enable(self, enable: bool) -> None:
@@ -309,7 +315,7 @@ class PowerFeather():
             raise BatteryError("Can't update batt charging, no battery has been configured")
 
         self._charger.charging_enable = enable
-        logger.info(f"Batt charging set to: {enable}")
+        logger.debug(f"Batt charging set to: {enable}")
 
     def batt_charging_max_current(self, current: Optional[int] = None) -> Optional[int]:
         """Get/Set the battery's maximum charging current.
@@ -336,7 +342,7 @@ class PowerFeather():
             return self._charger.charging_current_limit
 
         self._charger.charging_current_limit = current
-        logger.info(f"Batt max charge current set to: {current} mA")
+        logger.debug(f"Batt max charge current set to: {current} mA")
         return None
 
     def batt_charging_status(self) -> str:
@@ -366,7 +372,7 @@ class PowerFeather():
         else:
             status = "Unknown"
 
-        logger.info(f"Batt Charging Status: {status}")
+        logger.debug(f"Batt Charging Status: {status}")
         return status
 
     def batt_current(self) -> Optional[int]:
@@ -388,7 +394,7 @@ class PowerFeather():
         current = self._charger.batt_current
 
         # TODO: Verify negative value for discharge and positive for charge.
-        logger.info(f"Measured Batt Current: {current} mA")
+        logger.debug(f"Measured Batt Current: {current} mA")
         return current
 
     def batt_cycles(self) -> int:
@@ -412,7 +418,7 @@ class PowerFeather():
         self._init_fuel_gauge()  # Will skip initialization if already initialized
 
         cycles = self._fuel_gauge.batt_cycles
-        logger.info(f"Estimated Batt Cycles: {cycles}")
+        logger.debug(f"Estimated Batt Cycles: {cycles}")
         return cycles
 
     def batt_fuel_gauge_enable(self, enable: bool) -> None:
@@ -465,7 +471,7 @@ class PowerFeather():
         self._init_fuel_gauge()  # Will skip initialization if already initialized
 
         health = self._fuel_gauge.batt_soh
-        logger.info(f"Estimated Batt Health: {health} %")
+        logger.debug(f"Estimated Batt Health: {health} %")
         return health
 
     def batt_temp(self) -> float:
@@ -511,7 +517,7 @@ class PowerFeather():
                 logger.warning("Can't yet provide estimate for time left to full/empty.")
                 time_left = None
 
-        logger.info(f"Time Left to full/empty: {time_left} min")
+        logger.debug(f"Time Left to full/empty: {time_left} min")
         return time_left
 
     def batt_voltage(self) -> int:
@@ -543,7 +549,7 @@ class PowerFeather():
             self._charger_adc_update()
             voltage = self._charger.batt_voltage
 
-        logger.info("Measured Batt Voltage: {voltage} mV")
+        logger.debug("Measured Batt Voltage: {voltage} mV")
         return voltage
 
     def is_usb_connected(self) -> bool:
@@ -660,7 +666,7 @@ class PowerFeather():
 
         self._charger_adc_update()
         current = self._charger.bus_current
-        logger.info(f"Supply current: {current} ma")
+        logger.debug(f"Supply current: {current} ma")
         return current
 
     def supply_good(self) -> bool:
@@ -670,7 +676,7 @@ class PowerFeather():
             bool: True if good, False if not.
         """
         is_good = self._pin_pg.value() == 0
-        logger.info(f"Power Good: {is_good}")
+        logger.debug(f"Power Good: {is_good}")
         return is_good
 
     def supply_voltage(self) -> int:
@@ -687,5 +693,5 @@ class PowerFeather():
 
         self._charger_adc_update()
         voltage = self._charger.bus_voltage
-        logger.info(f"Supply voltage: {voltage} mv")
+        logger.debug(f"Supply voltage: {voltage} mv")
         return voltage
