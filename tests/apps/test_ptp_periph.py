@@ -1,3 +1,16 @@
+"""
+test_ptp_periph.py
+
+Pytest for testing the ptp library via the use of miniot and a custom test SocketProtocol.
+This is meant to be executed together with the test_ptp_master.py test file, the two will communicate
+with each other using os python's socket library.
+
+To test:
+1. Run the master file first in its own terminal session: `poetry run pytest -s test_ptp_master.py`
+2. Run the periph file in its own terminal session: `poetry run pytest -s test_ptp_periph.py`
+
+"""
+
 # Handle mocked modules first
 from mp_libs import logging
 mock_config = {
@@ -82,7 +95,7 @@ def main():
     rtc = RTC()
     socket_protocol = SocketProtocol(is_client=True)
     espnow_protocol = EspnowProtocol(peers=[b'p\x04\x1d\xad|\xc0'])  # Underlying epn class is mocked via protocol_mocks fixture
-    espnow_protocol.epn._transport = socket_protocol
+    espnow_protocol.epn._transport = socket_protocol  # Force mocked mp epn class to send data via sockets
     serial_protocol = SerialProtocol(transport=espnow_protocol, mtu_size_bytes=MTU_SIZE)
     miniot_protocol = MinIotProtocol(transport=serial_protocol)
 
@@ -93,7 +106,8 @@ def main():
     while True:
         # Perform periph sequence
         timestamps = ptp.sequence_periph(
-            miniot_protocol,
+            miniot_protocol.send,
+            miniot_protocol.receive,
             lambda miniot_msg: miniot_msg.msg,
             TIMEOUT_MSEC,
             initiate_sync=True,

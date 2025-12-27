@@ -1,3 +1,16 @@
+"""
+test_ptp_master.py
+
+Pytest for testing the ptp library via the use of miniot and a custom test SocketProtocol.
+This is meant to be executed together with the test_ptp_periph.py test file, the two will communicate
+with each other using os python's socket library.
+
+To test:
+1. Run the master file first in its own terminal session: `poetry run pytest -s test_ptp_master.py`
+2. Run the periph file in its own terminal session: `poetry run pytest -s test_ptp_periph.py`
+
+"""
+
 # Handle mocked modules first
 from mp_libs import logging
 mock_config = {
@@ -65,7 +78,7 @@ import pytest
 
 # Local imports
 from mp_libs.network import Network
-from mp_libs.protocols.min_iot_protocol import MinIotProtocol
+from mp_libs.protocols.min_iot_protocol import MinIotProtocol, MinIotMessage
 from mp_libs.protocols.serial_protocols import SerialProtocol
 from mp_libs.protocols.espnow_protocol import EspnowProtocol
 from mp_libs.time import ptp
@@ -80,8 +93,8 @@ TIMEOUT_MSEC = 5000
 def main():
     rtc = RTC()
     socket_protocol = SocketProtocol(is_client=False)
-    espnow_protocol = EspnowProtocol(peers=[b'p\x04\x1d\xad|\xc0'])  # Underlying epn class is mocked via protocol_mocks fixture
-    espnow_protocol.epn._transport = socket_protocol
+    espnow_protocol = EspnowProtocol(peers=[b'p\x04\x1d\xad|\xc0'])  # Underlying micropython epn class is mocked via protocol_mocks fixture
+    espnow_protocol.epn._transport = socket_protocol  # Force mocked mp epn class to send data via sockets
     serial_protocol = SerialProtocol(transport=espnow_protocol, mtu_size_bytes=MTU_SIZE)
     miniot_protocol = MinIotProtocol(transport=serial_protocol)
 
@@ -90,7 +103,7 @@ def main():
     print("PTP Master is connected")
 
     while True:
-        rxed_packets = []
+        rxed_packets: list[MinIotMessage] = []
         data_available = False
 
         # Receive data
@@ -110,7 +123,8 @@ def main():
             print(f"ptp_type: {ptp_type}, payload: {payload}")
             if ptp_type == ptp.PtpMsg.SYNC_REQ:
                 ptp.sequence_master(
-                    miniot_protocol,
+                    miniot_protocol.send,
+                    miniot_protocol.receive,
                     lambda miniot_msg: miniot_msg.msg,
                     TIMEOUT_MSEC,
                     num_sync_cycles=payload)
