@@ -13,7 +13,7 @@ import json
 import time
 from micropython import const
 try:
-    from typing import Dict, List, Optional
+    from typing import Dict, List, Optional, Union
 except ImportError:
     pass
 
@@ -40,7 +40,7 @@ class MinIotMessage():
     def __init__(
         self,
         topic: str,
-        msg: str,
+        msg: Union[str, bytes, bytearray],
         sent_ts: Optional[int] = None,
         received_ts: Optional[int] = None
     ) -> None:
@@ -55,7 +55,7 @@ class MinIotMessage():
         return f"topic: {self.topic}, msg: {self.msg}, sent_ts: {self.sent_ts}, received_ts: {self.received_ts}"
 
     @property
-    def msg(self) -> str:
+    def msg(self) -> Union[str, bytes, bytearray]:
         """Get msg attribute"""
         return self.data["msg"]
 
@@ -156,7 +156,7 @@ class MinIotProtocol(InterfaceProtocol):
     def is_connected(self) -> bool:
         return self.transport.is_connected()
 
-    def receive(self, rxed_data: list, **kwargs) -> bool:
+    def receive(self, rxed_data: List[MinIotMessage], **kwargs) -> bool:
         """Attempts to construct and return a MinIotMessage payload.
 
         This function should be called in a polling fashion as each call will read in a piece of
@@ -190,6 +190,7 @@ class MinIotProtocol(InterfaceProtocol):
                     pass
 
                 iot_msg.received_ts = time.time()
+                logger.debug(f"rx'ed msg: {iot_msg}")
                 rxed_data.append(iot_msg)
 
         return data_available
