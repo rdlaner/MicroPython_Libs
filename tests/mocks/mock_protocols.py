@@ -110,11 +110,12 @@ class MockESPNow(InterfaceProtocol):
 
         return (self._mac, next_msg)
 
-    def send(self, msg, **kwargs):
+    def send(self, msg, **kwargs) -> bool:
         if self._transport is not None:
-            self._transport.send(msg, **kwargs)
-        else:
-            self._sent_msgs.append(msg)
+            return self._transport.send(msg, **kwargs)
+
+        self._sent_msgs.append(msg)
+        return True
 
     def set_rx_exc(self, force_exc: bool):
         self._rx_exc = force_exc
