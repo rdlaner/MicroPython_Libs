@@ -1,5 +1,7 @@
 """Basic Precision Time Protocol (PTP) implementation
 
+TODO: Should turn the sequence_periph and master functions use actual state machines to better
+      handle errors, recovery, etc.
 TODO: Consider options to make this async friendly.
 """
 # pylint: disable=raise-missing-from
@@ -22,7 +24,6 @@ from mp_libs import logging
 from mp_libs import statistics
 from mp_libs.enum import Enum
 from mp_libs.mpy_decimal import DecimalNumber
-from mp_libs.protocols import InterfaceProtocol
 
 # Local imports
 try:
@@ -207,56 +208,56 @@ def calculate_offset(t1: int, t2: int, t3: int, t4: int) -> int:
     return ((t2 - t1) - (t4 - t3)) // 2
 
 
-def sync_req(transport: InterfaceProtocol, num_sync_cycles: int = 1, **kwargs) -> None:
+def sync_req(tx_fxn: Callable[[Any], bool], num_sync_cycles: int = 1, **kwargs) -> None:
     """Send SYNC_REQ packet.
 
     Args:
-        transport (InterfaceProtocol): Transport to send message over.
+        tx_fxn (Callable[[Any], bool]): Send function to transmit message
         num_sync_cycles (int, optional): Number of PTP sync cycles to perform. Defaults to 1.
     """
     logger.debug("Sending SYNC REQ")
-    transport.send(PtpPacket(PtpMsg.SYNC_REQ, num_sync_cycles).serialize(), **kwargs)
+    tx_fxn(PtpPacket(PtpMsg.SYNC_REQ, num_sync_cycles).serialize(), **kwargs)
 
 
-def sync_start(transport: InterfaceProtocol, **kwargs) -> int:
+def sync_start(tx_fxn: Callable[[Any], bool], **kwargs) -> int:
     """Send SYNC_START packet.
 
     Args:
-        transport (InterfaceProtocol): Transport to send message over.
+        tx_fxn (Callable[[Any], bool]): Send function to transmit message
 
     Returns:
         int: T1 timestamp.
     """
     logger.debug("Sending SYNC START")
     t1 = rtc.now()
-    transport.send(PtpPacket(PtpMsg.SYNC_START, t1).serialize(), **kwargs)
+    tx_fxn(PtpPacket(PtpMsg.SYNC_START, t1).serialize(), **kwargs)
     return t1
 
 
-def delay_req(transport: InterfaceProtocol, **kwargs) -> int:
+def delay_req(tx_fxn: Callable[[Any], bool], **kwargs) -> int:
     """Send DELAY_REQ packet.
 
     Args:
-        transport (InterfaceProtocol): Transport to send message over.
+        tx_fxn (Callable[[Any], bool]): Send function to transmit message
 
     Returns:
         int: T3 timestamp.
     """
     logger.debug("Sending DELAY REQ")
     t3 = rtc.now()
-    transport.send(PtpPacket(PtpMsg.DELAY_REQ, t3).serialize(), **kwargs)
+    tx_fxn(PtpPacket(PtpMsg.DELAY_REQ, t3).serialize(), **kwargs)
     return t3
 
 
-def delay_resp(transport: InterfaceProtocol, ts: int, **kwargs) -> None:
+def delay_resp(tx_fxn: Callable[[Any], bool], ts: int, **kwargs) -> None:
     """Send DELAY_RESP packet.
 
     Args:
-        transport (InterfaceProtocol): Transport to send message over.
+        tx_fxn (Callable[[Any], bool]): Send function to transmit data
         ts (int): T4 timestamp.
     """
     logger.debug("Sending DELAY RESP")
-    transport.send(PtpPacket(PtpMsg.DELAY_RESP, ts).serialize(), **kwargs)
+    tx_fxn(PtpPacket(PtpMsg.DELAY_RESP, ts).serialize(), **kwargs)
 
 
 def is_ptp_msg(msg: bytes) -> bool:
@@ -311,7 +312,8 @@ def process_offsets(offsets: Union[List[int], List[DecimalNumber]]) -> int:
 
 
 def sequence_master(
-    transport: InterfaceProtocol,
+    tx_fxn: Callable[[Any], bool],
+    rx_fxn: Callable[[List], bool],
     msg_parser: Callable[[Any], bytes],
     timeout_ms: int = DEFAULT_TIMEOUT_MSEC,
     num_sync_cycles: int = 1,
@@ -320,23 +322,25 @@ def sequence_master(
     """Performs the PTP master's sync operations.
 
     Args:
-        transport (InterfaceProtocol): Transport to send messages over.
-        msg_parser (Callable[[Any], bytes]): Callable to parse the transport message and return a bytes payload.
+        tx_fxn (Callable[[Any], bool]): Send function to transmit data.
+        rx_fxn (Callable[[List], bool]): Receive function to receive data.
+        msg_parser (Callable[[Any], bytes]): Callable to parse the received message(s) and return a bytes payload.
         timeout_ms (int, optional): Time to wait for responses. Defaults to DEFAULT_TIMEOUT_MSEC.
         num_sync_cycles (int, optional): Number of time sync cycles to perform. Defaults to 1.
     """
     cycle_count = 0
     while cycle_count < num_sync_cycles:
-        sync_start(transport, **kwargs)
-        _, t4 = wait_for_msg(PtpMsg.DELAY_REQ, transport, msg_parser, timeout_ms, **kwargs)
-        delay_resp(transport, t4, **kwargs)
+        sync_start(tx_fxn, **kwargs)
+        _, t4 = wait_for_msg(PtpMsg.DELAY_REQ, rx_fxn, msg_parser, timeout_ms, **kwargs)
+        delay_resp(tx_fxn, t4, **kwargs)
         time.sleep_ms(25)  # pylint: disable=no-member
 
         cycle_count += 1
 
 
 def sequence_periph(
-    transport: InterfaceProtocol,
+    tx_fxn: Callable[[Any], bool],
+    rx_fxn: Callable[[List], bool],
     msg_parser: Callable[[Any], bytes],
     timeout_ms: int = DEFAULT_TIMEOUT_MSEC,
     initiate_sync: bool = False,
@@ -346,8 +350,9 @@ def sequence_periph(
     """Performs the PTP peripheral's sync operations.
 
     Args:
-        transport (InterfaceProtocol): Transport to send messages over.
-        msg_parser (Callable[[Any], bytes]): Callable to parse the transport message and return a bytes payload.
+        tx_fxn (Callable[[Any], bool]): Send function to transmit data.
+        rx_fxn (Callable[[List], bool]): Receive function to receive data.
+        msg_parser (Callable[[Any], bytes]): Callable to parse the rx'ed message and return a bytes payload.
         timeout_ms (int, optional): Time to wait for responses. Defaults to DEFAULT_TIMEOUT_MSEC.
         initiate_sync (bool, optional): If True, peripheral will initiate the sync process.
                                         If False, peripheral will go straight to waiting for SYNC_START.
@@ -358,14 +363,14 @@ def sequence_periph(
         List[Tuple[int, int, int, int]]: List of T1-T4 timestamp tuples. One tuple per sync cycle.
     """
     if initiate_sync:
-        sync_req(transport, num_sync_cycles, **kwargs)
+        sync_req(tx_fxn, num_sync_cycles, **kwargs)
 
     cycle_count = 0
     results = []
     while cycle_count < num_sync_cycles:
-        t1, t2 = wait_for_msg(PtpMsg.SYNC_START, transport, msg_parser, timeout_ms, **kwargs)
-        t3 = delay_req(transport, **kwargs)
-        t4, _ = wait_for_msg(PtpMsg.DELAY_RESP, transport, msg_parser, timeout_ms, **kwargs)
+        t1, t2 = wait_for_msg(PtpMsg.SYNC_START, rx_fxn, msg_parser, timeout_ms, **kwargs)
+        t3 = delay_req(tx_fxn, **kwargs)
+        t4, _ = wait_for_msg(PtpMsg.DELAY_RESP, rx_fxn, msg_parser, timeout_ms, **kwargs)
 
         results.append((t1, t2, t3, t4))
         cycle_count += 1
@@ -375,7 +380,7 @@ def sequence_periph(
 
 def wait_for_msg(
     msg_type: Union[PtpMsg, int],
-    transport: InterfaceProtocol,
+    rx_fxn: Callable[[List], bool],
     msg_parser: Callable[[Any], bytes],
     timeout_ms: int = DEFAULT_TIMEOUT_MSEC,
     **kwargs
@@ -384,8 +389,8 @@ def wait_for_msg(
 
     Args:
         msg_type (Union[PtpMsg, int]): Message to wait for.
-        transport (InterfaceProtocol): Transport to receive message from.
-        msg_parser (Callable[[Any], bytes]): Callable to parse the transport message and return a bytes payload.
+        rx_fxn (Callable[[List], bool]): Receive function to receive data.
+        msg_parser (Callable[[Any], bytes]): Callable to parse the rx'ed message and return a bytes payload.
         timeout_ms (int, optional): Time to wait for responses. Defaults to DEFAULT_TIMEOUT_MSEC.
 
     Raises:
@@ -398,7 +403,7 @@ def wait_for_msg(
     """
     logger.debug(f"Waiting for {PtpMsg.to_str(msg_type)}")
 
-    transport_msgs = []
+    rx_msgs = []
     msg_found = False
     rx_ts = None
     payload = None
@@ -408,12 +413,13 @@ def wait_for_msg(
         if timeout_ms is not None and time.ticks_diff(time.ticks_ms(), start) > timeout_ms:  # pylint: disable=no-member
             raise TimeoutError(f"Timed out waiting for PTP message: {PtpMsg.to_str(msg_type)}.")
 
-        if not transport.receive(transport_msgs, kwargs=kwargs):
+        if not rx_fxn(rx_msgs, kwargs=kwargs):
             continue
 
         rx_ts = rtc.now()
         actual_msg_type = None
-        packets = [msg_parser(msg) for msg in transport_msgs]
+        packets = [msg_parser(msg) for msg in rx_msgs]
+        logger.debug(f"rx'ed packets: {packets}")
 
         # Process packets until we find one that parses successfully
         for pkt in packets:
