@@ -8,6 +8,7 @@ import binascii
 import io
 import struct
 import sys
+import time
 from collections import namedtuple
 from math import ceil
 from micropython import const
@@ -474,8 +475,13 @@ class SerialProtocol(InterfaceProtocol):
         self._cached_data = bytearray()
 
     def _parse_packets(self, rxed_data: List) -> List:
+        try:
+            self._cached_data.extend(b"".join(rxed_data))
+        except TypeError as exc:
+            logger.exception(f"Received non-bytes payload, throwing out: {rxed_data}", exc_info=exc)
+            return []
+
         # Collect received data and append it to any existing cached data
-        self._cached_data.extend(b"".join(rxed_data))
         cache = memoryview(self._cached_data)
 
         # Iterate over cache marking the location of each detected delimiter.
@@ -593,6 +599,8 @@ class SerialProtocol(InterfaceProtocol):
 
             # Build up current serial message
             for packet in rxed_packets:
+                logger.debug(f"Rx'ed serial packet: {packet}")
+
                 try:
                     self._curr_msg.add_packet(packet)
                 except SerialMessageException as exc:
@@ -601,6 +609,7 @@ class SerialProtocol(InterfaceProtocol):
 
                 # Return data if a full msg has been received
                 if self._curr_msg.is_msg_complete():
+                    logger.debug(f"rx'ed msg: {self._curr_msg.data}")
                     rxed_data.append(self._curr_msg.data)
                     data_available = True
                     self._curr_msg = SerialMessage.create_msg_empty()
