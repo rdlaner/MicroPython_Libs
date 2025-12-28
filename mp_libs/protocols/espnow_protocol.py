@@ -31,6 +31,7 @@ except ImportError:
     config = {"logging_level": logging.INFO}
 
 # Constants
+DEFAULT_ATTEMPTS = const(5)
 DEFAULT_TIMEOUT_MS = const(1000)
 DEFAULT_SCAN_RESP_TIMEOUT_MS = const(500)
 EPN_PACKET_MAX_SIZE = espnow.MAX_DATA_LEN
@@ -120,6 +121,9 @@ class EspnowPacket():
 
     def __len__(self) -> int:
         return len(self._serialized_packet)
+
+    def __repr__(self) -> str:
+        return f"Cmd: {self.cmd}, Payload: {self.payload}"
 
     def __str__(self) -> str:
         return f"Cmd: {self.cmd}, Payload: {self.payload}"
@@ -320,7 +324,7 @@ class EspnowProtocol(InterfaceProtocol):
         elif packet.cmd == EpnCmds.CMD_SCAN_REQ:
             logger.debug("Sending SCAN RESP")
             scan_resp = EspnowPacket(EpnCmds.CMD_SCAN_RESP)
-            self.send(scan_resp)
+            self.send(scan_resp, attempts=1)
         elif packet.cmd == EpnCmds.CMD_SCAN_RESP:
             logger.debug("Rx'ed SCAN RESP")
             result = packet
@@ -410,37 +414,53 @@ class EspnowProtocol(InterfaceProtocol):
             List: List containing first channel with valid scan response.
         """
         timeout_ms = kwargs.get("timeout", DEFAULT_SCAN_RESP_TIMEOUT_MS)
+        max_wifi_channels = const(14)
         channel_found = False
-        channel = 0
+        channel = 1
 
-        while channel <= 11 and not channel_found:
-            channel += 1
+        while channel <= max_wifi_channels and not channel_found:
+            cycles = 10
+            threshold = 8
+            successful_cycles = 0
             logger.debug(f"Changing channel to: {channel}")
             if not self.update_channel(channel):
                 raise EspnowError(f"Failed to update espnow/wifi channel to {channel}")
 
-            # Send scan request
-            logger.debug("Sending SCAN REQ")
-            self.send(EspnowPacket(EpnCmds.CMD_SCAN_REQ))
+            while cycles > 0:
+                cycles -= 1
 
-            # Wait for response
-            response = []
-            start = time.ticks_ms()
-            try:
-                while True:
-                    if timeout_ms is not None and time.ticks_diff(time.ticks_ms(), start) > timeout_ms:
-                        raise TimeoutError()
+                # Send scan request
+                logger.debug("Sending SCAN REQ")
+                send_success = self.send(EspnowPacket(EpnCmds.CMD_SCAN_REQ), attempts=1)
 
-                    data_available = self.receive(response)
+                if not send_success:
+                    continue
 
-                    if data_available and isinstance(response[0], EspnowPacket) and response[0].cmd == EpnCmds.CMD_SCAN_RESP:
-                        channel_found = True
-                        break
-            except TimeoutError:
-                pass
+                # Wait for response
+                response = []
+                start = time.ticks_ms()
+                try:
+                    while True:
+                        if timeout_ms is not None and time.ticks_diff(time.ticks_ms(), start) > timeout_ms:
+                            raise TimeoutError()
 
-        if channel > 11:
-            raise ScanError("No Scan Resp received on channels 1-11")
+                        data_available = self.receive(response)
+
+                        if data_available and isinstance(response[0], EspnowPacket) and response[0].cmd == EpnCmds.CMD_SCAN_RESP:
+                            successful_cycles += 1
+                            break
+                except TimeoutError:
+                    logger.debug("Timeout")
+
+            logger.info(f"Successful scan cycles for channel {channel}: {successful_cycles}")
+            if successful_cycles >= threshold:
+                channel_found = True
+
+            if not channel_found:
+                channel += 1
+
+        if channel > max_wifi_channels:
+            raise ScanError("No Scan Resp received on channels 1-14")
 
         return [channel]
 
@@ -458,6 +478,8 @@ class EspnowProtocol(InterfaceProtocol):
         Returns:
             bool: True if send succeeded, False if it failed.
         """
+        total_attempts = kwargs.get("attempts", DEFAULT_ATTEMPTS)
+
         if isinstance(msg, EspnowPacket):
             if len(msg) > EPN_PACKET_MAX_SIZE:
                 raise EspnowError(f"espnow msg len is greater than {EPN_PACKET_MAX_SIZE} bytes: {len(msg)}")
@@ -470,12 +492,24 @@ class EspnowProtocol(InterfaceProtocol):
 
             epn_packet = EspnowPacket(EpnCmds.CMD_PASS, msg)
 
-        success = True
-        try:
-            self.epn.send(epn_packet.serialize())
-        except (ValueError, OSError) as exc:
-            logger.exception("ESPNOW failed sending packet", exc_info=exc)
-            success = False
+        success = False
+        attempt = 1
+        while not success and attempt <= total_attempts:
+            try:
+                logger.debug(f"Attempt {attempt}, Sending: {epn_packet.serialize()}")
+                success = self.epn.send(epn_packet.serialize())
+                if success:
+                    break
+            except (ValueError, OSError) as exc:
+                logger.exception("ESPNOW failed sending packet", exc_info=exc)
+                success = False
+
+            attempt += 1
+
+        if attempt > total_attempts:
+            logger.error(f"Failed to send msg{epn_packet.serialize()} after {total_attempts} attempts. Success: {success}")
+        else:
+            logger.debug(f"Success?: {success}")
 
         return success
 
