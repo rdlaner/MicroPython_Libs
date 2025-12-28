@@ -235,8 +235,9 @@ class EspnowProtocol(InterfaceProtocol):
         self.wifi.disconnect(wait=False)
 
         # Configure EPN
-        self.epn.active(True)
+        # Note the rxbuf is only allocated after calling active(True). Therefore, config first.
         self.epn.config(rxbuf=self.ESPNOW_BUFFER_SIZE_BYTES, timeout_ms=timeout_ms)
+        self.epn.active(True)
 
         try:
             if isinstance(peers, list):
@@ -250,6 +251,7 @@ class EspnowProtocol(InterfaceProtocol):
             if len(exc.args) > 1 and exc.args[1] == "ESP_ERR_ESPNOW_EXIST":
                 logger.warning(f"Peer has already been added, skipping. Peers: {peers}")
 
+        logger.debug(f"espnow channel: {self.wifi._sta.config('channel')}")
         logger.debug("espnow configured")
 
     def _network_enable(self):
