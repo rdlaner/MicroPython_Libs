@@ -1,4 +1,8 @@
-"""Espnow protocols tests"""
+"""
+Espnow protocols tests
+
+To run all tests: `poetry run pytest -n auto protocols/test_espnow_protocols.py`
+"""
 # Standard imports
 import random
 from typing import Any, List, Optional, Tuple
@@ -434,8 +438,8 @@ def test_espnow_protocol_send_receive_fail_and_recover(protocol_mocks, mocker):
     logger_spy = mocker.spy(logging.getLogger("espnow-protocol"), "exception")
     epn_proto = ep.EspnowProtocol(peers=peers, hostname=hostname, channel=channel)
 
-    old_wifi_id = id(epn_proto.wifi)
-    old_epn_id = id(epn_proto.epn)
+    old_espnow_calls = espnow_mock.call_count
+    old_wifi_calls = wifi_proto_mock.call_count
 
     rx_msgs = []
     epn_proto.epn.set_rx_exc(True)
@@ -443,8 +447,9 @@ def test_espnow_protocol_send_receive_fail_and_recover(protocol_mocks, mocker):
     rx_result = epn_proto.receive(rx_msgs, recover=True)
 
     assert rx_result is False
-    assert old_wifi_id != id(epn_proto.wifi)
-    assert old_epn_id != id(epn_proto.epn)
+    # New espnow and wifi instances should have been constructed during recovery
+    assert espnow_mock.call_count == old_espnow_calls + 1
+    assert wifi_proto_mock.call_count == old_wifi_calls + 1
     assert epn_proto.wifi._hostname == hostname
     assert epn_proto.wifi._channel == channel
     assert epn_proto.epn._active is True

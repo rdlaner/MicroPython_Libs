@@ -1,4 +1,9 @@
-"""Serial protocols tests"""
+"""
+Serial protocols tests
+
+To run all tests: `poetry run pytest -n auto protocols/test_serial_protocols.py`
+
+"""
 # Standard imports
 import ast
 import pdb
