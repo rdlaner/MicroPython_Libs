@@ -325,7 +325,8 @@ class EspnowProtocol(InterfaceProtocol):
             result = packet.payload
         elif packet.cmd == EpnCmds.CMD_SCAN_REQ:
             logger.debug("Sending SCAN RESP")
-            scan_resp = EspnowPacket(EpnCmds.CMD_SCAN_RESP)
+            channel = self.wifi._sta.config('channel').to_bytes(1)
+            scan_resp = EspnowPacket(EpnCmds.CMD_SCAN_RESP, channel)
             self.send(scan_resp, attempts=1)
         elif packet.cmd == EpnCmds.CMD_SCAN_RESP:
             logger.debug("Rx'ed SCAN RESP")
@@ -421,20 +422,15 @@ class EspnowProtocol(InterfaceProtocol):
         channel = 1
 
         while channel <= max_wifi_channels and not channel_found:
-            cycles = 10
-            threshold = 8
-            successful_cycles = 0
-            logger.debug(f"Changing channel to: {channel}")
-            if not self.update_channel(channel):
-                raise EspnowError(f"Failed to update espnow/wifi channel to {channel}")
+            attempts = 3
+            self.update_channel(channel)
 
-            while cycles > 0:
-                cycles -= 1
+            while attempts > 0 and not channel_found:
+                attempts -= 1
 
                 # Send scan request
                 logger.debug("Sending SCAN REQ")
                 send_success = self.send(EspnowPacket(EpnCmds.CMD_SCAN_REQ), attempts=1)
-
                 if not send_success:
                     continue
 
@@ -449,14 +445,17 @@ class EspnowProtocol(InterfaceProtocol):
                         data_available = self.receive(response)
 
                         if data_available and isinstance(response[0], EspnowPacket) and response[0].cmd == EpnCmds.CMD_SCAN_RESP:
-                            successful_cycles += 1
+                            peer_channel = int.from_bytes(response[0].payload)
+                            try:
+                                self.update_channel(peer_channel)
+                            except EspnowError:
+                                pass
+                            else:
+                                channel = peer_channel
+                                channel_found = True
                             break
                 except TimeoutError:
                     logger.debug("Timeout")
-
-            logger.info(f"Successful scan cycles for channel {channel}: {successful_cycles}")
-            if successful_cycles >= threshold:
-                channel_found = True
 
             if not channel_found:
                 channel += 1
@@ -531,11 +530,27 @@ class EspnowProtocol(InterfaceProtocol):
         # except (ValueError, RuntimeError, IDFError) as exc:
         #     print(f"ESPNOW failed sending metrics\n{exc}")
 
-    def update_channel(self, channel: int) -> bool:
+    def update_channel(self, channel: int) -> None:
+        """Update the wifi channel to the one specified.
+
+        Args:
+            channel (int): New wifi channel number
+
+        Raises:
+            EspnowError: Failed to update wifi channel
+            EspnowError: Attempted to update to an invalid channel
+        """
+        if not (1 <= channel <= 14):
+            raise EspnowError(f"Invalid wifi channel: {channel}")
+
+        logger.debug(f"Changing channel to: {channel}")
+
         # espnow must be deactivated/reset in order to change the underlying wifi channel
         self._network_disable()
 
         # Re-run configuration, this will re-enable espnow as well as update the wifi channel
         self._configure(self.peers, self.hostname, channel, self.timeout_ms)
 
-        return self.wifi._sta.config("channel") == channel
+        # Verify
+        if self.wifi._sta.config("channel") != channel:
+            raise EspnowError(f"Failed to update espnow/wifi channel to {channel}")
