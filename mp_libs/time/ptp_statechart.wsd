@@ -1,0 +1,33 @@
+@startuml
+
+[*] --> Ready
+Ready: Entry - Reset context data
+Ready -> SyncReq: BEGIN
+Ready -> SyncResp: SYNC_REQ
+
+state Periph {
+    SyncReq: Entry - Send SYNC_REQ\n\t   Start timeout timer
+    SyncReq: TIMEOUT - Decr cycle counter
+    SyncReq: SYNC_RESP - Capture T2\n\t\t      Stop timeout timer
+    SyncReq --> DelayReq: SYNC_RESP
+    SyncReq --> SyncReq: Timeout
+    SyncReq --> Ready: cycles == 0
+
+    DelayReq: Entry - Capture T3\n\t   Send DELAY_REQ(T3)\n\t   Start timeout timer
+    DelayReq: TIMEOUT - Decr cycle counter
+    DelayReq: DELAY_RESP - Stop timeout timer\n\t\t\t Store samples\n\t\t\t Calc/Apply offset\n\t\t\t Decr cycle counter
+    DelayReq --> SyncReq: DELAY_RESP
+    DelayReq --> SyncReq: Timeout
+}
+
+state Master {
+    SyncResp: Entry - Send SYNC_RESP(T1)
+    SyncResp: DELAY_REQ - Capture T4
+    SyncResp --> SyncResp: SYNC_REQ
+    SyncResp --> DelayResp : DELAY_REQ
+
+    DelayResp: Entry - Send DELAY_RESP(T4)
+    DelayResp --> SyncResp : SYNC_REQ
+}
+
+@enduml

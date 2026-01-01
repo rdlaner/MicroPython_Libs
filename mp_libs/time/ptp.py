@@ -1,8 +1,8 @@
 """Basic Precision Time Protocol (PTP) implementation
 
-TODO: Should turn the sequence_periph and master functions use actual state machines to better
-      handle errors, recovery, etc.
-TODO: Consider options to make this async friendly.
+TODO: Add support for registering PTP started and completed callbacks
+TODO: Support synchronous call of time_sync
+TODO: Need a global way of allocating timer instances since esp32 port doesn't support virtual timers
 """
 # pylint: disable=raise-missing-from
 
@@ -12,14 +12,15 @@ import struct
 import sys
 import time
 from collections import namedtuple
-from machine import RTC        # pylint: disable=import-error,
-from micropython import const  # pylint: disable=import-error, wrong-import-order
+from machine import RTC, Timer           # pylint: disable=import-error,
+from micropython import const, schedule  # pylint: disable=import-error, wrong-import-order
 try:
-    from typing import Any, Callable, List, Optional, Tuple, Union
+    from typing import Any, Callable, List, Optional, Tuple, Union, TYPE_CHECKING
 except ImportError:
-    pass
+    TYPE_CHECKING = False
 
 # Third party imports
+from mp_libs import event_sm as sm
 from mp_libs import logging
 from mp_libs import statistics
 from mp_libs.enum import Enum
@@ -35,16 +36,20 @@ except ImportError:
 PTP_PACKET_DELIM = b"<PTP>"
 PTP_PACKET_FORMAT_STR = f"<{len(PTP_PACKET_DELIM)}sBQ"
 PTP_PACKET_SIZE_BYTES = struct.calcsize(PTP_PACKET_FORMAT_STR)
-DEFAULT_TIMEOUT_MSEC = const(1000)
+DEFAULT_TIMEOUT_MSEC = const(750)
 
 # Globals
 logger: logging.Logger = logging.getLogger("PTP")
 logger.setLevel(config["logging_level"])
 rtc = RTC()
+if TYPE_CHECKING:
+    PtpStateBase = sm.InterfaceState["PtpSM"]
+else:
+    PtpStateBase = sm.InterfaceState
 
 
 # Tuple defining all of the PtpPacket elements
-PtpPacketTuple = namedtuple("PtpPacket", ("delim", "msg", "payload"))
+PtpPacketTuple = namedtuple("PtpPacket", ("delim", "cmd", "payload"))
 
 
 class PtpPacketError(Exception):
@@ -58,30 +63,30 @@ class TimeoutError(Exception):  # pylint: disable=redefined-builtin
     """General timeout exception"""
 
 
-class PtpMsg(Enum):
+class PtpCmd(Enum):
     """All PTP message types"""
     SYNC_REQ = const(0)
-    SYNC_START = const(1)
+    SYNC_RESP = const(1)
     DELAY_REQ = const(2)
     DELAY_RESP = const(3)
     _to_str_lut = {
         SYNC_REQ: "SYNC REQ",
-        SYNC_START: "SYNC_START",
+        SYNC_RESP: "SYNC_RESP",
         DELAY_REQ: "DELAY_REQ",
         DELAY_RESP: "DELAY_RESP"
     }
 
     @classmethod
-    def to_str(cls, msg: Union["PtpMsg", int]) -> str:
-        """Get the associated string for a given PtpMsg enum value.
+    def to_str(cls, cmd: Union["PtpCmd", int]) -> str:
+        """Get the associated string for a given PtpCmd enum value.
 
         Args:
-            msg (PtpMsg): PtpMsg enum value (eg PtpMsg.SYNC_REQ).
+            cmd (PtpCmd): PtpCmd enum value (eg PtpCmd.SYNC_REQ).
 
         Returns:
             str: Enum string value.
         """
-        return cls._to_str_lut[msg]
+        return cls._to_str_lut[cmd]
 
 
 class PtpPacket():
@@ -89,15 +94,15 @@ class PtpPacket():
 
     PTP packet composition:
     -------------------------
-    | <PTP> | Msg | Payload |
+    | <PTP> | Cmd | Payload |
     -------------------------
 
-    Msg must be one of the PtpMsg values. Payload must be an int.
+    Cmd must be one of the PtpCmd values. Payload must be an int.
     """
-    def __init__(self, msg: Union[PtpMsg, int], payload: int) -> None:
+    def __init__(self, cmd: Union[PtpCmd, int], payload: int) -> None:
         self._packet = PtpPacketTuple(
             delim=PTP_PACKET_DELIM,
-            msg=msg,
+            cmd=cmd,
             payload=payload
         )
         self._serialized_packet = b""
@@ -107,18 +112,18 @@ class PtpPacket():
         self._serialized_packet = struct.pack(
             PTP_PACKET_FORMAT_STR,
             self._packet.delim,
-            self._packet.msg,
+            self._packet.cmd,
             self._packet.payload
         )
 
     @property
-    def msg(self) -> PtpMsg:
+    def cmd(self) -> PtpCmd:
         """Get packet message type.
 
         Returns:
-            PtpMsg: Packet message type.
+            PtpCmd: Packet message type.
         """
-        return self._packet.msg
+        return self._packet.cmd
 
     @property
     def payload(self) -> int:
@@ -140,7 +145,7 @@ class PtpPacket():
             PtpPacketError: Invalid packet size.
             PtpPacketError: Failed to deserialize.
             PtpPacketError: Invalid delim.
-            PtpPacketError: Invalid msg.
+            PtpPacketError: Invalid cmd.
             PtpPacketError: Invalid payload.
 
         Returns:
@@ -162,12 +167,12 @@ class PtpPacket():
         # Verify header
         if ptp_tuple.delim != PTP_PACKET_DELIM:
             raise PtpPacketError(f"Invalid packet delim: {ptp_tuple.delim}")
-        if not PtpMsg.contains(ptp_tuple.msg):
-            raise PtpPacketError(f"Packet contains invalid msg: {ptp_tuple.msg}")
+        if not PtpCmd.contains(ptp_tuple.cmd):
+            raise PtpPacketError(f"Packet contains invalid cmd: {ptp_tuple.cmd}")
         if not isinstance(ptp_tuple.payload, int):
             raise PtpPacketError(f"Invalid payload: {ptp_tuple.payload}")
 
-        return cls(ptp_tuple.msg, ptp_tuple.payload)
+        return cls(ptp_tuple.cmd, ptp_tuple.payload)
 
     def serialize(self) -> bytes:
         """Serializes this packet instance into a bytes object.
@@ -178,88 +183,214 @@ class PtpPacket():
         return self._serialized_packet
 
 
-def calculate_delay(t1: int, t2: int, t3: int, t4: int) -> int:
-    """Calculates the transmission delay value from t1-t4 timestamps.
-
-    Args:
-        t1 (int): SYNC_START TX timestamp.
-        t2 (int): SYNC_START RX timestamp.
-        t3 (int): DELAY_REQ TX timestamp.
-        t4 (int): DELAY_REQ RX timestamp.
-
-    Returns:
-        int: Transmission delay value.
-    """
-    return ((t2 - t1) + (t4 - t3)) // 2
+class PtpSig(Enum):
+    """All PTP signals"""
+    SIG_BEGIN = const(0)
+    SIG_SYNC_REQ = const(1)
+    SIG_SYNC_RESP = const(2)
+    SIG_DELAY_REQ = const(3)
+    SIG_DELAY_RESP = const(4)
+    SIG_TIMEOUT = const(5)
 
 
-def calculate_offset(t1: int, t2: int, t3: int, t4: int) -> int:
-    """Calculates the offset value from t1-t4 timestamps.
-
-    Args:
-        t1 (int): SYNC_START TX timestamp.
-        t2 (int): SYNC_START RX timestamp.
-        t3 (int): DELAY_REQ TX timestamp.
-        t4 (int): DELAY_REQ RX timestamp.
-
-    Returns:
-        int: Offset value.
-    """
-    return ((t2 - t1) - (t4 - t3)) // 2
+class PtpEvt(sm.Event):
+    """PTP state machine event"""
+    def __init__(
+        self,
+        signal: int,
+        payload_ts: int = 0,
+        rx_ts: int = 0
+    ) -> None:
+        super().__init__(signal)
+        self.payload_ts = payload_ts
+        self.rx_ts = rx_ts
 
 
-def sync_req(tx_fxn: Callable[[Any], bool], num_sync_cycles: int = 1, **kwargs) -> None:
-    """Send SYNC_REQ packet.
+class PtpSM(sm.StateMachine):
+    """PTP state machine"""
+    def __init__(
+        self,
+        name: str,
+        tx_fxn: Callable[[Any], bool],
+        timeout_ms: int,
+        num_sync_cycles: int
+    ) -> None:
+        super().__init__(name)
+        self._cycle_count = 0
+        self._timeout_timer = Timer(3)
+        self.tx_fxn = tx_fxn
+        self.timeout_ms = timeout_ms
+        self.num_sync_cycles = num_sync_cycles
+        self.timestamps: List[Tuple] = []
+        self.t1 = 0
+        self.t2 = 0
+        self.t3 = 0
+        self.t4 = 0
 
-    Args:
-        tx_fxn (Callable[[Any], bool]): Send function to transmit message
-        num_sync_cycles (int, optional): Number of PTP sync cycles to perform. Defaults to 1.
-    """
-    logger.debug("Sending SYNC REQ")
-    tx_fxn(PtpPacket(PtpMsg.SYNC_REQ, num_sync_cycles).serialize(), **kwargs)
+    def cycle_count_decr(self):
+        """Decrement cycle count by 1"""
+        if self._cycle_count > 0:
+            self._cycle_count -= 1
+
+    def cycle_count_reset(self):
+        """Reset cycle count back to num_sync_cycles"""
+        self._cycle_count = self.num_sync_cycles
+
+    def cycle_count(self) -> int:
+        """Get current cycle count value"""
+        return self._cycle_count
+
+    def timer_start(self):
+        """Start timeout timer"""
+        self._timeout_timer.init(mode=Timer.ONE_SHOT, period=self.timeout_ms, callback=timeout_timer_cb)
+
+    def timer_stop(self):
+        """Stop timeout timer"""
+        self._timeout_timer.deinit()
+
+    def timestamp_clear(self):
+        """Clear current and cached timestamp values"""
+        self.t1 = 0
+        self.t2 = 0
+        self.t3 = 0
+        self.t4 = 0
+        self.timestamps = []
 
 
-def sync_start(tx_fxn: Callable[[Any], bool], **kwargs) -> int:
-    """Send SYNC_START packet.
+class StateReady(PtpStateBase):
+    """PTP Ready state"""
+    def __init__(self) -> None:
+        super().__init__("Ready")
 
-    Args:
-        tx_fxn (Callable[[Any], bool]): Send function to transmit message
+    def entry(self):
+        logger.debug(f"Entry: {self._name}")
+        self.sm.timer_stop()
+        self.sm.cycle_count_reset()
+        self.sm.timestamp_clear()
 
-    Returns:
-        int: T1 timestamp.
-    """
-    logger.debug("Sending SYNC START")
-    t1 = rtc.now()
-    tx_fxn(PtpPacket(PtpMsg.SYNC_START, t1).serialize(), **kwargs)
-    return t1
+    def exit(self):
+        logger.debug(f"Exit: {self._name}")
 
+    def process_evt(self, evt: sm.Event) -> None:
+        logger.debug(f"Proc: {self._name}, Evt: {evt}")
 
-def delay_req(tx_fxn: Callable[[Any], bool], **kwargs) -> int:
-    """Send DELAY_REQ packet.
-
-    Args:
-        tx_fxn (Callable[[Any], bool]): Send function to transmit message
-
-    Returns:
-        int: T3 timestamp.
-    """
-    logger.debug("Sending DELAY REQ")
-    t3 = rtc.now()
-    tx_fxn(PtpPacket(PtpMsg.DELAY_REQ, t3).serialize(), **kwargs)
-    return t3
+        if evt.signal == PtpSig.SIG_SYNC_REQ:
+            self.transition(StateSyncResp())
+        elif evt.signal == PtpSig.SIG_BEGIN:
+            self.transition(StateSyncReq())
+        else:
+            logger.warning(f"{self._name}: rx'ed unhandled evt: {evt}")
 
 
-def delay_resp(tx_fxn: Callable[[Any], bool], ts: int, **kwargs) -> None:
-    """Send DELAY_RESP packet.
+class StateSyncReq(PtpStateBase):
+    "PTP Sync Request state"
+    def __init__(self) -> None:
+        super().__init__("SyncReq")
 
-    Args:
-        tx_fxn (Callable[[Any], bool]): Send function to transmit data
-        ts (int): T4 timestamp.
-    """
-    logger.debug("Sending DELAY RESP")
-    tx_fxn(PtpPacket(PtpMsg.DELAY_RESP, ts).serialize(), **kwargs)
+    def entry(self):
+        logger.debug(f"Entry: {self._name}")
+        if self.sm.cycle_count() == 0:
+            self.transition(StateReady())
+        else:
+            sync_req(self.sm.tx_fxn, self.sm.num_sync_cycles)
+            self.sm.timer_start()
+
+    def exit(self):
+        logger.debug(f"Exit: {self._name}")
+
+    def process_evt(self, evt: PtpEvt) -> None:
+        logger.debug(f"Proc: {self._name}, Evt: {evt}")
+
+        if evt.signal == PtpSig.SIG_TIMEOUT:
+            self.sm.cycle_count_decr()
+            self.transition(StateSyncReq())
+        elif evt.signal == PtpSig.SIG_SYNC_RESP:
+            self.sm.timer_stop()
+            self.sm.t2 = evt.rx_ts
+            self.sm.t1 = evt.payload_ts
+            self.transition(StateDelayReq())
 
 
+class StateSyncResp(PtpStateBase):
+    """PTP Sync Response state"""
+    def __init__(self) -> None:
+        super().__init__("SyncResp")
+
+    def entry(self):
+        logger.debug(f"Entry: {self._name}")
+        sync_resp(self.sm.tx_fxn)
+
+    def exit(self):
+        logger.debug(f"Exit: {self._name}")
+
+    def process_evt(self, evt: PtpEvt) -> None:
+        logger.debug(f"Proc: {self._name}, Evt: {evt}")
+
+        if evt.signal == PtpSig.SIG_SYNC_REQ:
+            sync_resp(self.sm.tx_fxn)
+        elif evt.signal == PtpSig.SIG_DELAY_REQ:
+            self.sm.t4 = evt.rx_ts
+            self.transition(StateDelayResp())
+        else:
+            logger.warning(f"{self._name}: rx'ed unhandled evt: {evt}")
+
+
+class StateDelayReq(PtpStateBase):
+    """PTP Delay Request state"""
+    def __init__(self) -> None:
+        super().__init__("DelayReq")
+
+    def entry(self):
+        logger.debug(f"Entry: {self._name}")
+        self.sm.t3 = delay_req(self.sm.tx_fxn)
+        self.sm.timer_start()
+
+    def exit(self):
+        logger.debug(f"Exit: {self._name}")
+
+    def process_evt(self, evt: PtpEvt) -> None:
+        logger.debug(f"Proc: {self._name}, Evt: {evt}")
+
+        if evt.signal == PtpSig.SIG_TIMEOUT:
+            self.sm.cycle_count_decr()
+            self.transition(StateSyncReq())
+        elif evt.signal == PtpSig.SIG_DELAY_RESP:
+            self.sm.timer_stop()
+            self.sm.t4 = evt.payload_ts
+            self.sm.timestamps.append((self.sm.t1, self.sm.t2, self.sm.t3, self.sm.t4))
+            self.sm.cycle_count_decr()
+
+            if self.sm.cycle_count() == 0:
+                calculate_and_apply_offset(self.sm.timestamps)
+                self.transition(StateReady())
+            else:
+                self.transition(StateSyncReq())
+
+
+class StateDelayResp(PtpStateBase):
+    """PTP Delay Response state"""
+    def __init__(self) -> None:
+        super().__init__("DelayResp")
+
+    def entry(self):
+        logger.debug(f"Entry: {self._name}")
+        delay_resp(self.sm.tx_fxn, self.sm.t4)
+
+    def exit(self):
+        logger.debug(f"Exit: {self._name}")
+
+    def process_evt(self, evt: PtpEvt) -> None:
+        logger.debug(f"Proc: {self._name}, Evt: {evt}")
+
+        if evt.signal == PtpSig.SIG_SYNC_REQ:
+            self.transition(StateSyncResp())
+        else:
+            logger.warning(f"{self._name}: rx'ed unhandled evt: {evt}")
+
+
+################################################################################
+#                           Public API
+################################################################################
 def is_ptp_msg(msg: bytes) -> bool:
     """Checks if a given serialized array of bytes is a PTP Packet.
 
@@ -278,17 +409,186 @@ def is_ptp_msg(msg: bytes) -> bool:
     return result
 
 
-def parse_msg(msg: bytes) -> Tuple[Union[PtpMsg, int], int]:
-    """Parse a serialized PtpPacket.
+def process_packet(packet: PtpPacket) -> None:
+    """Process received PTP packet and generate appropriate state machine event.
 
     Args:
-        msg (bytes): Serialized PtpPacket.
+        packet (PtpPacket): PTP packet received from PTP peer.
+    """
+    if not _ptp_sm:
+        raise RuntimeError("PTP SM not yet initialized")
+
+    if packet.cmd == PtpCmd.SYNC_REQ:
+        _evt_sync_req.payload_ts = packet.payload
+        _evt_sync_req.rx_ts = rtc.now()
+        _ptp_sm.process_evt(_evt_sync_req)
+    elif packet.cmd == PtpCmd.SYNC_RESP:
+        _evt_sync_resp.payload_ts = packet.payload
+        _evt_sync_resp.rx_ts = rtc.now()
+        _ptp_sm.process_evt(_evt_sync_resp)
+    elif packet.cmd == PtpCmd.DELAY_REQ:
+        _evt_delay_req.payload_ts = packet.payload
+        _evt_delay_req.rx_ts = rtc.now()
+        _ptp_sm.process_evt(_evt_delay_req)
+    elif packet.cmd == PtpCmd.DELAY_RESP:
+        _evt_delay_resp.payload_ts = packet.payload
+        _evt_delay_resp.rx_ts = rtc.now()
+        _ptp_sm.process_evt(_evt_delay_resp)
+    else:
+        raise RuntimeError(f"Rx'ed unexpected PTP cmd: {packet.cmd}")
+
+
+def state_machine_init(
+    tx_fxn: Callable[[Any], bool],
+    timeout_ms: int = DEFAULT_TIMEOUT_MSEC,
+    num_sync_cycles: int = 1
+) -> None:
+    """Initialize PTP state machine.
+
+    Args:
+        tx_fxn (Callable[[Any], bool]): Function for sending PTP packets.
+        timeout_ms (int, optional): PTP tx/rx timeout in msec. Defaults to DEFAULT_TIMEOUT_MSEC.
+        num_sync_cycles (int, optional): Number of synchronization cycles performed per sync. Defaults to 1.
+    """
+    global _ptp_sm
+    _ptp_sm = PtpSM("PTP SM", tx_fxn, timeout_ms, num_sync_cycles)
+    _ptp_sm.register_state(StateReady())
+    _ptp_sm.register_state(StateSyncReq())
+    _ptp_sm.register_state(StateSyncResp())
+    _ptp_sm.register_state(StateDelayReq())
+    _ptp_sm.register_state(StateDelayResp())
+
+
+def state_machine_start() -> None:
+    """Start PTP state machine.
+
+    NOTE: Must initialize state machine via `state_machine_init` before starting it.
+
+    Raises:
+        RuntimeError: State machine not initialized.
+    """
+    if not _ptp_sm:
+        raise RuntimeError("PTP SM not yet initialized")
+
+    _ptp_sm.start(StateReady())
+
+
+def time_sync(is_async: bool = True, force: Optional[bool] = False) -> None:
+    """Start PTP time sync process
+
+    NOTE: Must initialize (`state_machine_init`) and start (`state_machine_start`) first.
+
+    Args:
+        is_async (bool, optional): Perform time sync asynchronously. Defaults to True.
+        force (Optional[bool], optional): Force a new sync regardless of current state. Defaults to False.
+
+    Raises:
+        RuntimeError: State machine not initialized.
+    """
+    if not _ptp_sm:
+        raise RuntimeError("PTP SM not yet initialized")
+
+    if _ptp_sm.current_state != StateReady() and force is True:
+        _ptp_sm.start(StateReady())
+
+    if _ptp_sm.current_state == StateReady():
+        _ptp_sm.process_evt(_evt_begin)
+    else:
+        logger.warning("Skipping PTP time sync, SM not ready")
+
+
+################################################################################
+#                           Private API
+################################################################################
+_evt_begin = PtpEvt(PtpSig.SIG_BEGIN)
+_evt_sync_req = PtpEvt(PtpSig.SIG_SYNC_REQ)
+_evt_sync_resp = PtpEvt(PtpSig.SIG_SYNC_RESP)
+_evt_delay_req = PtpEvt(PtpSig.SIG_DELAY_REQ)
+_evt_delay_resp = PtpEvt(PtpSig.SIG_DELAY_RESP)
+_evt_timeout = PtpEvt(PtpSig.SIG_TIMEOUT)
+_ptp_sm: Optional["PtpSM"] = None
+
+
+def calculate_and_apply_offset(timestamps: List[Tuple]) -> int:
+    """Takes in a list of T1-T4 timestamp tuples, calculates and applies the average offset.
+
+    Args:
+        timestamps (List[Tuple]): List of T1-T4 timestamp tuples.
 
     Returns:
-        Tuple[Union[PtpMsg, int], int]: (msg type, payload)
+        int: Offset that was calculated and applied
     """
-    packet = PtpPacket.deserialize(msg)
-    return (packet.msg, packet.payload)
+    # Sanitize timestamps - consider 0 an invalid timestamp value
+    timestamps = [t for t in timestamps if 0 not in t]
+    offsets = [calculate_offset(t1, t2, t3, t4) for t1, t2, t3, t4 in timestamps]
+
+    if offsets:
+        ave_offset = process_offsets(offsets)
+        rtc.offset(ave_offset)
+
+        logger.debug(f"timestamps: {timestamps}")
+        logger.debug(f"offsets: {offsets}")
+        logger.debug(f"ave offset: {ave_offset}")
+        return ave_offset
+
+    logger.warning("No PTP offsets calculated after sanitizing inputs")
+    return 0
+
+
+def calculate_delay(t1: int, t2: int, t3: int, t4: int) -> int:
+    """Calculates the transmission delay value from t1-t4 timestamps.
+
+    Args:
+        t1 (int): SYNC_RESP TX timestamp.
+        t2 (int): SYNC_RESP RX timestamp.
+        t3 (int): DELAY_REQ TX timestamp.
+        t4 (int): DELAY_REQ RX timestamp.
+
+    Returns:
+        int: Transmission delay value.
+    """
+    return ((t2 - t1) + (t4 - t3)) // 2
+
+
+def calculate_offset(t1: int, t2: int, t3: int, t4: int) -> int:
+    """Calculates the offset value from t1-t4 timestamps.
+
+    Args:
+        t1 (int): SYNC_RESP TX timestamp.
+        t2 (int): SYNC_RESP RX timestamp.
+        t3 (int): DELAY_REQ TX timestamp.
+        t4 (int): DELAY_REQ RX timestamp.
+
+    Returns:
+        int: Offset value.
+    """
+    return ((t2 - t1) - (t4 - t3)) // 2
+
+
+def delay_req(tx_fxn: Callable[[Any], bool], **kwargs) -> int:
+    """Send DELAY_REQ packet.
+
+    Args:
+        tx_fxn (Callable[[Any], bool]): Send function to transmit message
+
+    Returns:
+        int: T3 timestamp.
+    """
+    logger.debug("Sending DELAY REQ")
+    t3 = rtc.now()
+    tx_fxn(PtpPacket(PtpCmd.DELAY_REQ, t3).serialize(), **kwargs)
+    return t3
+
+
+def delay_resp(tx_fxn: Callable[[Any], bool], ts: int, **kwargs) -> None:
+    """Send DELAY_RESP packet.
+
+    Args:
+        tx_fxn (Callable[[Any], bool]): Send function to transmit data
+        ts (int): T4 timestamp.
+    """
+    logger.debug("Sending DELAY RESP")
+    tx_fxn(PtpPacket(PtpCmd.DELAY_RESP, ts).serialize(), **kwargs)
 
 
 def process_offsets(offsets: Union[List[int], List[DecimalNumber]]) -> int:
@@ -311,132 +611,42 @@ def process_offsets(offsets: Union[List[int], List[DecimalNumber]]) -> int:
     return ave_offset.to_int_truncate()                       # type: ignore
 
 
-def sequence_master(
-    tx_fxn: Callable[[Any], bool],
-    rx_fxn: Callable[[List], bool],
-    msg_parser: Callable[[Any], bytes],
-    timeout_ms: int = DEFAULT_TIMEOUT_MSEC,
-    num_sync_cycles: int = 1,
-    **kwargs
-) -> None:
-    """Performs the PTP master's sync operations.
+def sync_req(tx_fxn: Callable[[Any], bool], num_sync_cycles: int = 1, **kwargs) -> None:
+    """Send SYNC_REQ packet.
 
     Args:
-        tx_fxn (Callable[[Any], bool]): Send function to transmit data.
-        rx_fxn (Callable[[List], bool]): Receive function to receive data.
-        msg_parser (Callable[[Any], bytes]): Callable to parse the received message(s) and return a bytes payload.
-        timeout_ms (int, optional): Time to wait for responses. Defaults to DEFAULT_TIMEOUT_MSEC.
-        num_sync_cycles (int, optional): Number of time sync cycles to perform. Defaults to 1.
+        tx_fxn (Callable[[Any], bool]): Send function to transmit message
+        num_sync_cycles (int, optional): Number of PTP sync cycles to perform. Defaults to 1.
     """
-    cycle_count = 0
-    while cycle_count < num_sync_cycles:
-        sync_start(tx_fxn, **kwargs)
-        _, t4 = wait_for_msg(PtpMsg.DELAY_REQ, rx_fxn, msg_parser, timeout_ms, **kwargs)
-        delay_resp(tx_fxn, t4, **kwargs)
-        time.sleep_ms(25)  # pylint: disable=no-member
-
-        cycle_count += 1
+    logger.debug("Sending SYNC REQ")
+    tx_fxn(PtpPacket(PtpCmd.SYNC_REQ, num_sync_cycles).serialize(), **kwargs)
 
 
-def sequence_periph(
-    tx_fxn: Callable[[Any], bool],
-    rx_fxn: Callable[[List], bool],
-    msg_parser: Callable[[Any], bytes],
-    timeout_ms: int = DEFAULT_TIMEOUT_MSEC,
-    initiate_sync: bool = False,
-    num_sync_cycles: int = 1,
-    **kwargs
-) -> List[Tuple[int, int, int, int]]:
-    """Performs the PTP peripheral's sync operations.
+def sync_resp(tx_fxn: Callable[[Any], bool], **kwargs) -> int:
+    """Send SYNC_RESP packet.
 
     Args:
-        tx_fxn (Callable[[Any], bool]): Send function to transmit data.
-        rx_fxn (Callable[[List], bool]): Receive function to receive data.
-        msg_parser (Callable[[Any], bytes]): Callable to parse the rx'ed message and return a bytes payload.
-        timeout_ms (int, optional): Time to wait for responses. Defaults to DEFAULT_TIMEOUT_MSEC.
-        initiate_sync (bool, optional): If True, peripheral will initiate the sync process.
-                                        If False, peripheral will go straight to waiting for SYNC_START.
-                                        Defaults to False.
-        num_sync_cycles (int, optional): Number of time sync cycles to perform. Defaults to 1.
+        tx_fxn (Callable[[Any], bool]): Send function to transmit message
 
     Returns:
-        List[Tuple[int, int, int, int]]: List of T1-T4 timestamp tuples. One tuple per sync cycle.
+        int: T1 timestamp.
     """
-    if initiate_sync:
-        sync_req(tx_fxn, num_sync_cycles, **kwargs)
-
-    cycle_count = 0
-    results = []
-    while cycle_count < num_sync_cycles:
-        t1, t2 = wait_for_msg(PtpMsg.SYNC_START, rx_fxn, msg_parser, timeout_ms, **kwargs)
-        t3 = delay_req(tx_fxn, **kwargs)
-        t4, _ = wait_for_msg(PtpMsg.DELAY_RESP, rx_fxn, msg_parser, timeout_ms, **kwargs)
-
-        results.append((t1, t2, t3, t4))
-        cycle_count += 1
-
-    return results
+    logger.debug("Sending SYNC RESP")
+    t1 = rtc.now()
+    tx_fxn(PtpPacket(PtpCmd.SYNC_RESP, t1).serialize(), **kwargs)
+    return t1
 
 
-def wait_for_msg(
-    msg_type: Union[PtpMsg, int],
-    rx_fxn: Callable[[List], bool],
-    msg_parser: Callable[[Any], bytes],
-    timeout_ms: int = DEFAULT_TIMEOUT_MSEC,
-    **kwargs
-) -> Tuple[Optional[int], Optional[int]]:
-    """Wait for the specified message to be received.
+def timeout_work(sm: PtpSM) -> None:
+    """Inject timeout event to state machine.
 
     Args:
-        msg_type (Union[PtpMsg, int]): Message to wait for.
-        rx_fxn (Callable[[List], bool]): Receive function to receive data.
-        msg_parser (Callable[[Any], bytes]): Callable to parse the rx'ed message and return a bytes payload.
-        timeout_ms (int, optional): Time to wait for responses. Defaults to DEFAULT_TIMEOUT_MSEC.
-
-    Raises:
-        TimeoutError: Timed out waiting for message.
-        PtpPacketError: Did not receive a valid PtpPacket.
-        PtpPacketError: PtpPacket contained unexpected message.
-
-    Returns:
-        Tuple[int, int]: (payload, received timestamp). Will be (None, None) if timed out.
+        sm (PtpSM): PTP state machine reference.
     """
-    logger.debug(f"Waiting for {PtpMsg.to_str(msg_type)}")
+    sm.process_evt(_evt_timeout)
 
-    rx_msgs = []
-    msg_found = False
-    rx_ts = None
-    payload = None
-    start = time.ticks_ms()  # pylint: disable=no-member
 
-    while not msg_found:
-        if timeout_ms is not None and time.ticks_diff(time.ticks_ms(), start) > timeout_ms:  # pylint: disable=no-member
-            raise TimeoutError(f"Timed out waiting for PTP message: {PtpMsg.to_str(msg_type)}.")
-
-        if not rx_fxn(rx_msgs, kwargs=kwargs):
-            continue
-
-        rx_ts = rtc.now()
-        actual_msg_type = None
-        packets = [msg_parser(msg) for msg in rx_msgs]
-        logger.debug(f"rx'ed packets: {packets}")
-
-        # Process packets until we find one that parses successfully
-        for pkt in packets:
-            try:
-                actual_msg_type, payload = parse_msg(pkt)
-            except PtpPacketError as exc:
-                logger.exception("PTP packet parsing failed. Skipping packet", exc_info=exc)
-            else:
-                break
-
-        if actual_msg_type is None or payload is None:
-            raise PtpPacketError(f"wait_for_msg - Received data, but did not receive a valid PtpPacket: {packets}")
-
-        if actual_msg_type != msg_type:
-            raise PtpPacketError(f"Rx'ed unexpected msg. Expected: {msg_type}. Actual: {actual_msg_type}.")
-
-        msg_found = True
-        logger.debug(f"Rx'ed msg: {PtpMsg.to_str(msg_type)}, Payload: {payload}, TS: {rx_ts}")
-
-    return (payload, rx_ts)
+def timeout_timer_cb(timer):
+    """Timeout timer callback"""
+    _ptp_sm.timer_stop()
+    schedule(timeout_work, _ptp_sm)
