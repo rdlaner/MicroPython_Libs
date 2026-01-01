@@ -9,7 +9,8 @@ import traceback
 from unittest import mock
 
 # Local imports
-from tests.mocks.mock_machine import MockRtc
+from tests.mocks.mock_machine import MockRtc, MockTimer
+from tests.mocks.mock_micropython import mock_schedule
 
 
 # Mocked modules
@@ -84,8 +85,10 @@ def mock_time_sleep_ms(time_msec: int) -> int:
 
 # Apply any global mocks that operate outside of a fixture
 mock_micropython.const.side_effect = lambda x: x
+mock_micropython.schedule = mock_schedule
 mock_espnow.MAX_DATA_LEN = 250
 mock_machine.RTC = MockRtc
+mock_machine.Timer = MockTimer
 time.sleep_ms = mock_time_sleep_ms
 
 
