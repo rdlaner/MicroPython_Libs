@@ -1,5 +1,7 @@
 """ESP-Now Protocol Implementation
 
+TODO: Add ping command to allow for faster verification of channel and comms w/ peer
+TODO: Add tx and rx timestamps to EspnowPacket for better PTP resolution. Even better, we can modify the MP layer to get timestamps directly from the esp idf (or even hw)
 TODO: Metrics don't persist for espnow when using deep sleep mode...
 TODO: Add retry attempts to espnow send?
 """
@@ -23,6 +25,7 @@ from mp_libs import logging
 from mp_libs.enum import Enum
 from mp_libs.protocols import InterfaceProtocol
 from mp_libs.protocols.wifi_protocols import WifiProtocol
+from mp_libs.time import ptp
 
 # Local imports
 try:
@@ -38,6 +41,8 @@ EPN_PACKET_MAX_SIZE = espnow.MAX_DATA_LEN
 EPN_PACKET_DELIM = b"<EPN>"
 EPN_PACKET_HDR_FORMAT_STR = f"<{len(EPN_PACKET_DELIM)}sBB"
 EPN_PACKET_HDR_SIZE_BYTES = struct.calcsize(EPN_PACKET_HDR_FORMAT_STR)
+PTP_TIMEOUT_MSEC = const(250)
+PTP_SYNC_CYCLES = const(5)
 
 # Globals
 logger: logging.Logger = logging.getLogger("espnow-protocol")
@@ -51,12 +56,16 @@ EspnowPacketHeader = namedtuple("EPNHeader",
 
 
 class EpnCmds(Enum):
-    CMD_SCAN_REQ = const(0)
-    CMD_SCAN_RESP = const(1)
-    CMD_PASS = const(2)
+    CMD_PING = const(0)
+    CMD_SCAN_REQ = const(1)
+    CMD_SCAN_RESP = const(2)
+    CMD_PTP = const(3)
+    CMD_PASS = const(4)
     _to_str_lut = {
+        CMD_PING: "CMD_PING",
         CMD_SCAN_REQ: "SCAN_REQ",
         CMD_SCAN_RESP: "SCAN_RESP",
+        CMD_PTP: "CMD_PTP",
         CMD_PASS: "PASS"
     }
 
@@ -219,6 +228,12 @@ class EspnowProtocol(InterfaceProtocol):
         self.timeout_ms = timeout_ms
         self.wifi = WifiProtocol(ssid=None, password=None, hostname=hostname, channel=channel)
         self.epn = espnow.ESPNow()
+
+        def ptp_send(msg) -> bool:
+            epn_packet = EspnowPacket(EpnCmds.CMD_PTP, msg)
+            return self.send(epn_packet)
+        ptp.state_machine_init(ptp_send, PTP_TIMEOUT_MSEC, PTP_SYNC_CYCLES)
+
         self._configure(peers, hostname, channel, timeout_ms)
 
     def __repr__(self) -> str:
@@ -250,6 +265,9 @@ class EspnowProtocol(InterfaceProtocol):
         except OSError as exc:
             if len(exc.args) > 1 and exc.args[1] == "ESP_ERR_ESPNOW_EXIST":
                 logger.warning(f"Peer has already been added, skipping. Peers: {peers}")
+
+        # Restart PTP state machine on each (re)config
+        ptp.state_machine_start()
 
         logger.debug(f"espnow channel: {self.wifi._sta.config('channel')}")
         logger.debug("espnow configured")
@@ -331,6 +349,12 @@ class EspnowProtocol(InterfaceProtocol):
         elif packet.cmd == EpnCmds.CMD_SCAN_RESP:
             logger.debug("Rx'ed SCAN RESP")
             result = packet
+        elif packet.cmd == EpnCmds.CMD_PTP:
+            logger.debug("Rx'ed PTP")
+            try:
+                ptp.process_packet(ptp.PtpPacket.deserialize(packet.payload))
+            except ptp.PtpPacketError as exc:
+                logger.exception(f"Failed parsing/processing PTP packet: {packet}", exc_info=exc)
         else:
             raise EspnowPacketError(f"Packet contains invalid cmd: {packet.cmd}")
 
