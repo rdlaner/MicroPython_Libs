@@ -1,7 +1,5 @@
 """Basic Precision Time Protocol (PTP) implementation
 
-TODO: Add support for registering PTP started and completed callbacks
-TODO: Support synchronous call of time_sync
 TODO: Need a global way of allocating timer instances since esp32 port doesn't support virtual timers
 """
 # pylint: disable=raise-missing-from
@@ -20,7 +18,7 @@ except ImportError:
     TYPE_CHECKING = False
 
 # Third party imports
-from mp_libs import event_sm as sm
+from mp_libs import event_sm
 from mp_libs import logging
 from mp_libs import statistics
 from mp_libs.enum import Enum
@@ -43,9 +41,9 @@ logger: logging.Logger = logging.getLogger("PTP")
 logger.setLevel(config["logging_level"])
 rtc = RTC()
 if TYPE_CHECKING:
-    PtpStateBase = sm.InterfaceState["PtpSM"]
+    PtpStateBase = event_sm.InterfaceState["PtpSM"]
 else:
-    PtpStateBase = sm.InterfaceState
+    PtpStateBase = event_sm.InterfaceState
 
 
 # Tuple defining all of the PtpPacket elements
@@ -193,7 +191,7 @@ class PtpSig(Enum):
     SIG_TIMEOUT = const(5)
 
 
-class PtpEvt(sm.Event):
+class PtpEvt(event_sm.Event):
     """PTP state machine event"""
     def __init__(
         self,
@@ -206,7 +204,7 @@ class PtpEvt(sm.Event):
         self.rx_ts = rx_ts
 
 
-class PtpSM(sm.StateMachine):
+class PtpSM(event_sm.StateMachine):
     """PTP state machine"""
     def __init__(
         self,
@@ -222,6 +220,8 @@ class PtpSM(sm.StateMachine):
         self.timeout_ms = timeout_ms
         self.num_sync_cycles = num_sync_cycles
         self.timestamps: List[Tuple] = []
+        self.sync_complete_cbs = set()
+        self.sync_started_cbs = set()
         self.t1 = 0
         self.t2 = 0
         self.t3 = 0
@@ -271,12 +271,14 @@ class StateReady(PtpStateBase):
     def exit(self):
         logger.debug(f"Exit: {self._name}")
 
-    def process_evt(self, evt: sm.Event) -> None:
+    def process_evt(self, evt: event_sm.Event) -> None:
         logger.debug(f"Proc: {self._name}, Evt: {evt}")
 
         if evt.signal == PtpSig.SIG_SYNC_REQ:
             self.transition(StateSyncResp())
         elif evt.signal == PtpSig.SIG_BEGIN:
+            for cb in self.sm.sync_started_cbs:
+                cb()
             self.transition(StateSyncReq())
         else:
             logger.warning(f"{self._name}: rx'ed unhandled evt: {evt}")
@@ -362,6 +364,9 @@ class StateDelayReq(PtpStateBase):
 
             if self.sm.cycle_count() == 0:
                 calculate_and_apply_offset(self.sm.timestamps)
+                for cb in self.sm.sync_complete_cbs:
+                    cb()
+
                 self.transition(StateReady())
             else:
                 self.transition(StateSyncReq())
@@ -391,6 +396,72 @@ class StateDelayResp(PtpStateBase):
 ################################################################################
 #                           Public API
 ################################################################################
+def cb_register_sync_start(cb: Callable[[], None]) -> None:
+    """Register a callback to be invoked when PTP sync starts.
+
+    Args:
+        cb (Callable[[], None]): Callback
+
+    Raises:
+        RuntimeError: PTP state machine not yet initialized.
+    """
+    if not _ptp_sm:
+        raise RuntimeError("PTP SM not yet initialized")
+
+    _ptp_sm.sync_started_cbs.add(cb)
+
+
+def cb_register_sync_complete(cb: Callable[[], None]) -> None:
+    """Register a callback to be invoked when PTP sync is completed.
+
+    Args:
+        cb (Callable[[], None]): Callback
+
+    Raises:
+        RuntimeError: PTP state machine not yet initialized.
+    """
+    if not _ptp_sm:
+        raise RuntimeError("PTP SM not yet initialized")
+
+    _ptp_sm.sync_complete_cbs.add(cb)
+
+
+def cb_unregister_sync_start(cb: Callable[[], None]) -> None:
+    """Unregister a callback to be invoked when PTP sync starts.
+
+    Args:
+        cb (Callable[[], None]): Callback
+
+    Raises:
+        RuntimeError: PTP state machine not yet initialized.
+    """
+    if not _ptp_sm:
+        raise RuntimeError("PTP SM not yet initialized")
+
+    try:
+        _ptp_sm.sync_started_cbs.remove(cb)
+    except KeyError:
+        logger.warning(f"Callback never registered: {cb.__name__}")
+
+
+def cb_unregister_sync_complete(cb: Callable[[], None]) -> None:
+    """Unregister a callback to be invoked when PTP sync is completed.
+
+    Args:
+        cb (Callable[[], None]): Callback
+
+    Raises:
+        RuntimeError: PTP state machine not yet initialized.
+    """
+    if not _ptp_sm:
+        raise RuntimeError("PTP SM not yet initialized")
+
+    try:
+        _ptp_sm.sync_complete_cbs.remove(cb)
+    except KeyError:
+        logger.warning(f"Callback never registered: {cb.__name__}")
+
+
 def is_ptp_msg(msg: bytes) -> bool:
     """Checks if a given serialized array of bytes is a PTP Packet.
 
@@ -473,28 +544,66 @@ def state_machine_start() -> None:
     _ptp_sm.start(StateReady())
 
 
-def time_sync(is_async: bool = True, force: Optional[bool] = False) -> None:
+def time_sync(
+    is_async: bool = True,
+    rx_fxn: Optional[Callable[[List], bool]] = None,
+    timeout_ms: int = const(2000),
+    force: bool = False
+) -> bool:
     """Start PTP time sync process
 
     NOTE: Must initialize (`state_machine_init`) and start (`state_machine_start`) first.
 
     Args:
         is_async (bool, optional): Perform time sync asynchronously. Defaults to True.
-        force (Optional[bool], optional): Force a new sync regardless of current state. Defaults to False.
+        rx_fxn: (Optional[Callable[[List], bool]]): Network receive function. Only used if is_async is False.
+        timeout_ms: (int): Timeout value when is_async is False. Defaults to 2000.
+        force (bool, optional): Force a new sync regardless of current state. Defaults to False.
 
-    Raises:
-        RuntimeError: State machine not initialized.
+    Returns:
+        bool: True if operation succeeded, False if failed.
     """
     if not _ptp_sm:
-        raise RuntimeError("PTP SM not yet initialized")
+        logger.error("PTP SM not yet initialized")
+        return False
+
+    if not is_async and not rx_fxn:
+        logger.error("Can't perform synchronous time sync without an rx_fxn")
+        return False
 
     if _ptp_sm.current_state != StateReady() and force is True:
         _ptp_sm.start(StateReady())
 
-    if _ptp_sm.current_state == StateReady():
-        _ptp_sm.process_evt(_evt_begin)
-    else:
+    if _ptp_sm.current_state != StateReady():
         logger.warning("Skipping PTP time sync, SM not ready")
+        return False
+
+    if not is_async:
+        sync_done = False
+
+        def sync_cb():
+            nonlocal sync_done
+            sync_done = True
+        cb_register_sync_complete(sync_cb)
+
+    success = True
+    _ptp_sm.process_evt(_evt_begin)
+
+    if not is_async:
+        rxed_data = []
+        start = time.ticks_ms()
+
+        while not sync_done:
+            if time.ticks_diff(time.ticks_ms(), start) > timeout_ms:
+                logger.error("Timed out attempting to perform PTP time sync")
+                success = False
+                break
+
+            _ = rx_fxn(rxed_data)
+
+        cb_unregister_sync_complete(sync_cb)
+
+    return success
 
 
 ################################################################################
