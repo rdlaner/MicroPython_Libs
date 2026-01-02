@@ -61,18 +61,26 @@ MQTT_PINGREQ = b"\xc0\0"
 MQTT_PINGRESP = const(0xD0)
 MQTT_PUBLISH = const(0x30)
 MQTT_SUB = const(0x82)
+MQTT_SUBACK = const(0x90)
 MQTT_UNSUB = const(0xA2)
+MQTT_UNSUBACK = const(0xB0)
 MQTT_DISCONNECT = b"\xe0\0"
 
 MQTT_PKT_TYPE_MASK = const(0xF0)
 
 
+CONNACK_ERROR_INCORRECT_PROTOCOL = const(0x01)
+CONNACK_ERROR_ID_REJECTED = const(0x02)
+CONNACK_ERROR_SERVER_UNAVAILABLE = const(0x03)
+CONNACK_ERROR_INCORECT_USERNAME_PASSWORD = const(0x04)
+CONNACK_ERROR_UNAUTHORIZED = const(0x05)
+
 CONNACK_ERRORS = {
-    const(0x01): "Connection Refused - Incorrect Protocol Version",
-    const(0x02): "Connection Refused - ID Rejected",
-    const(0x03): "Connection Refused - Server unavailable",
-    const(0x04): "Connection Refused - Incorrect username/password",
-    const(0x05): "Connection Refused - Unauthorized",
+    CONNACK_ERROR_INCORRECT_PROTOCOL: "Connection Refused - Incorrect Protocol Version",
+    CONNACK_ERROR_ID_REJECTED: "Connection Refused - ID Rejected",
+    CONNACK_ERROR_SERVER_UNAVAILABLE: "Connection Refused - Server unavailable",
+    CONNACK_ERROR_INCORECT_USERNAME_PASSWORD: "Connection Refused - Incorrect username/password",
+    CONNACK_ERROR_UNAUTHORIZED: "Connection Refused - Unauthorized",
 }
 
 _default_sock = None  # pylint: disable=invalid-name
@@ -80,10 +88,24 @@ _fake_context = None  # pylint: disable=invalid-name
 
 
 class MMQTTException(Exception):
-    """MiniMQTT Exception class."""
+    """
+    MiniMQTT Exception class.
 
-    # pylint: disable=unnecessary-pass
-    # pass
+    Raised for various mostly protocol or network/system level errors.
+    In general, the robust way to recover is to call reconnect().
+    """
+
+    def __init__(self, error, code=None):
+        super().__init__(error, code)
+        self.code = code
+
+
+class MMQTTStateError(MMQTTException):
+    """
+    MiniMQTT invalid state error.
+
+    Raised e.g. if a function is called in unexpected state.
+    """
 
 
 class TemporaryError(Exception):
@@ -169,8 +191,6 @@ class MQTT:
         This works with all callbacks but the "on_message" and those added via add_topic_callback();
         for those, to get access to the user_data use the 'user_data' member of the MQTT object
         passed as 1st argument.
-    :param bool use_imprecise_time: on boards without time.time_ns() one has to set
-        this to True in order to operate correctly over more than 24 days or so
 
     """
 
@@ -192,7 +212,6 @@ class MQTT:
         socket_timeout: int = 1,
         connect_retries: int = 5,
         user_data=None,
-        use_imprecise_time: Optional[bool] = None,
     ) -> None:
         self._socket_pool = socket_pool
         self._ssl_context = ssl_context
@@ -200,33 +219,17 @@ class MQTT:
         self._backwards_compatible_sock = False
         self._use_binary_mode = use_binary_mode
 
-        self.use_monotonic_us = False
-        try:
-            time.ticks_us()
-            self.use_monotonic_us = True
-        except AttributeError:
-            if use_imprecise_time:
-                self.use_monotonic_us = False
-            else:
-                raise MMQTTException(  # pylint: disable=raise-missing-from
-                    "time.time_ns() is not available. "
-                    "Will use imprecise time however only if the"
-                    "use_imprecise_time argument is set to True."
-                )
-
         if recv_timeout <= socket_timeout:
-            raise MMQTTException(
-                "recv_timeout must be strictly greater than socket_timeout"
-            )
+            raise ValueError("recv_timeout must be strictly greater than socket_timeout")
         self._socket_timeout = socket_timeout
-        self._recv_timeout = recv_timeout
+        self._recv_timeout_ms = recv_timeout * 1000
 
         self.keep_alive = keep_alive
         self.user_data = user_data
         self._is_connected = False
         self._msg_size_lim = MQTT_MSG_SZ_LIM
         self._pid = 0
-        self._timestamp: float = 0
+        self._last_msg_sent_timestamp: int = 0
         self.logger = NullLogger()
         """An optional logging attribute that can be set with with a Logger
         to enable debug logging."""
@@ -235,7 +238,7 @@ class MQTT:
         self._reconnect_timeout = float(0)
         self._reconnect_maximum_backoff = 32
         if connect_retries <= 0:
-            raise MMQTTException("connect_retries must be positive")
+            raise ValueError("connect_retries must be positive")
         self._reconnect_attempts_max = connect_retries
 
         self.broker = broker
@@ -244,7 +247,7 @@ class MQTT:
         if (
             self._password and len(password.encode("utf-8")) > MQTT_TOPIC_LENGTH_LIMIT
         ):  # [MQTT-3.1.3.5]
-            raise MMQTTException("Password length is too large.")
+            raise ValueError("Password length is too large.")
 
         # The connection will be insecure unless is_ssl is set to True.
         # If the port is not specified, the security will be set based on the is_ssl parameter.
@@ -258,6 +261,8 @@ class MQTT:
         if port:
             self.port = port
 
+        self.session_id = None
+
         # define client identifier
         if client_id:
             # user-defined client_id MAY allow client_id's > 23 bytes or
@@ -265,7 +270,7 @@ class MQTT:
             self.client_id = client_id
         else:
             # assign a unique client_id
-            time_int = int(self.get_monotonic_time() * 100) % 1000
+            time_int = int(time.ticks_ms() / 10) % 1000
             self.client_id = f"mpy{randint(0, time_int)}{randint(0, 99)}"
             # generated client_id's enforce spec.'s length rules
             if len(self.client_id.encode("utf-8")) > 23 or not self.client_id:
@@ -288,17 +293,6 @@ class MQTT:
         self.on_publish = None
         self.on_subscribe = None
         self.on_unsubscribe = None
-
-    def get_monotonic_time(self) -> float:
-        """
-        Provide monotonic time in seconds. Based on underlying implementation
-        this might result in imprecise time, that will result in the library
-        not being able to operate if running contiguously for more than 24 days or so.
-        """
-        if self.use_monotonic_us:
-            return time.ticks_us() / 1_000_000
-
-        return time.time()
 
     # pylint: disable=too-many-branches
     def _get_connect_socket(self, host: str, port: int, *, timeout: int = 1):
@@ -402,38 +396,70 @@ class MQTT:
 
     def will_set(
         self,
-        topic: Optional[str] = None,
-        payload: Optional[Union[int, float, str]] = None,
-        qos: int = 0,
+        topic: str,
+        msg: Union[str, int, float, bytes],
         retain: bool = False,
+        qos: int = 0,
     ) -> None:
         """Sets the last will and testament properties. MUST be called before `connect()`.
 
         :param str topic: MQTT Broker topic.
-        :param int|float|str payload: Last will disconnection payload.
-            payloads of type int & float are converted to a string.
+        :param str|int|float|bytes msg: Last will disconnection msg.
+            msgs of type int & float are converted to a string.
+            msgs of type byetes are left unchanged, as it is in the publish function.
         :param int qos: Quality of Service level, defaults to
             zero. Conventional options are ``0`` (send at most once), ``1``
             (send at least once), or ``2`` (send exactly once).
-
             .. note:: Only options ``1`` or ``0`` are QoS levels supported by this library.
-        :param bool retain: Specifies if the payload is to be retained when
+        :param bool retain: Specifies if the msg is to be retained when
             it is published.
         """
         self.logger.debug("Setting last will properties")
-        self._valid_qos(qos)
         if self._is_connected:
-            raise MMQTTException("Last Will should only be called before connect().")
-        if payload is None:
-            payload = ""
-        if isinstance(payload, (int, float, str)):
-            payload = str(payload).encode()
+            raise MMQTTStateError("Last Will should only be called before connect().")
+
+        # check topic/msg/qos kwargs
+        self._valid_topic(topic)
+        if "+" in topic or "#" in topic:
+            raise ValueError("Publish topic can not contain wildcards.")
+
+        if msg is None:
+            raise ValueError("Message can not be None.")
+        if isinstance(msg, (int, float)):
+            msg = str(msg).encode("ascii")
+        elif isinstance(msg, str):
+            msg = str(msg).encode("utf-8")
+        elif isinstance(msg, bytes):
+            pass
         else:
-            raise MMQTTException("Invalid message data type.")
+            raise ValueError("Invalid message data type.")
+        if len(msg) > MQTT_MSG_MAX_SZ:
+            raise ValueError(f"Message size larger than {MQTT_MSG_MAX_SZ} bytes.")
+
+        self._valid_qos(qos)
+
+        # fixed header. [3.3.1.2], [3.3.1.3]
+        pub_hdr_fixed = bytearray([MQTT_PUBLISH | retain | qos << 1])
+
+        # variable header = 2-byte Topic length (big endian)
+        pub_hdr_var = bytearray(struct.pack(">H", len(topic.encode("utf-8"))))
+        pub_hdr_var.extend(topic.encode("utf-8"))  # Topic name
+
+        remaining_length = 2 + len(msg) + len(topic.encode("utf-8"))
+        if qos > 0:
+            # packet identifier where QoS level is 1 or 2. [3.3.2.2]
+            remaining_length += 2
+            self._pid = self._pid + 1 if self._pid < 0xFFFF else 1
+            pub_hdr_var.append(self._pid >> 8)
+            pub_hdr_var.append(self._pid & 0xFF)
+
+        self._encode_remaining_length(pub_hdr_fixed, remaining_length)
+
         self._lw_qos = qos
         self._lw_topic = topic
-        self._lw_msg = payload
+        self._lw_msg = msg
         self._lw_retain = retain
+        self.logger.debug("Last will properties successfully set")
 
     def add_topic_callback(self, mqtt_topic: str, callback_method) -> None:
         """Registers a callback_method for a specific MQTT topic.
@@ -495,7 +521,7 @@ class MQTT:
 
         """
         if self._is_connected:
-            raise MMQTTException("This method must be called before connect().")
+            raise MMQTTStateError("This method must be called before connect().")
         self._username = username
         if password is not None:
             self._password = password
@@ -506,6 +532,7 @@ class MQTT:
         host: Optional[str] = None,
         port: Optional[int] = None,
         keep_alive: Optional[int] = None,
+        session_id: Optional[str] = None,
     ) -> int:
         """Initiates connection with the MQTT Broker. Will perform exponential back-off
         on connect failures.
@@ -515,7 +542,8 @@ class MQTT:
         :param int port: Network port of the remote broker.
         :param int keep_alive: Maximum period allowed for communication
             within single connection attempt, in seconds.
-
+        :param str session_id: unique session ID,
+            used for multiple simultaneous connections to the same host
         """
 
         last_exception = None
@@ -537,38 +565,64 @@ class MQTT:
                     host=host,
                     port=port,
                     keep_alive=keep_alive,
+                    session_id=session_id,
                 )
                 self._reset_reconnect_backoff()
                 return ret
-            except TemporaryError as e:
-                self.logger.warning(f"temporary error when connecting: {e}")
+            except (MemoryError, OSError, RuntimeError) as e:
+                if isinstance(e, RuntimeError) and e.args == ("pystack exhausted",):
+                    raise
+                self._close_socket()
+                self.logger.warning(f"Socket error when connecting: {e}")
+                last_exception = e
                 backoff = False
-            except OSError as e:
-                last_exception = e
-                self.logger.info(f"failed to connect: {e}")
-                self.logger.exception("exc_info:", exc_info=e)
-                backoff = True
             except MMQTTException as e:
-                last_exception = e
+                self._close_socket()
                 self.logger.info(f"MMQT error: {e}")
+                if e.code in [
+                    CONNACK_ERROR_INCORECT_USERNAME_PASSWORD,
+                    CONNACK_ERROR_UNAUTHORIZED,
+                ]:
+                    # No sense trying these again, re-raise
+                    raise
+                last_exception = e
                 backoff = True
 
         if self._reconnect_attempts_max > 1:
             exc_msg = "Repeated connect failures"
         else:
             exc_msg = "Connect failure"
-        if last_exception:
-            raise MMQTTException(exc_msg)
 
+        if last_exception:
+            raise MMQTTException(exc_msg) from last_exception
         raise MMQTTException(exc_msg)
 
-    # pylint: disable=too-many-branches, too-many-statements, too-many-locals
-    def _connect(
+    def _send_bytes(
+        self,
+        buffer: Union[bytes, bytearray, memoryview],
+    ):
+        bytes_sent: int = 0
+        bytes_to_send = len(buffer)
+        view = memoryview(buffer)
+        while bytes_sent < bytes_to_send:
+            try:
+                sent_now = self._sock.send(view[bytes_sent:])
+                # Some versions of `Socket.send()` do not return the number of bytes sent.
+                if not isinstance(sent_now, int):
+                    return
+                bytes_sent += sent_now
+            except OSError as exc:
+                if exc.errno == errno.EAGAIN:
+                    continue
+                raise
+
+    def _connect(  # noqa: PLR0912, PLR0913, PLR0915, Too many branches, Too many arguments, Too many statements
         self,
         clean_session: bool = True,
         host: Optional[str] = None,
         port: Optional[int] = None,
         keep_alive: Optional[int] = None,
+        session_id: Optional[str] = None,
     ) -> int:
         """Initiates connection with the MQTT Broker.
 
@@ -576,6 +630,8 @@ class MQTT:
         :param str host: Hostname or IP address of the remote broker.
         :param int port: Network port of the remote broker.
         :param int keep_alive: Maximum period allowed for communication, in seconds.
+        :param str session_id: unique session ID,
+            used for multiple simultaneous connections to the same host
 
         """
         if host:
@@ -597,6 +653,8 @@ class MQTT:
         self._sock = self._get_connect_socket(
             self.broker, self.port, timeout=self._socket_timeout
         )
+        self.session_id = session_id
+        self._backwards_compatible_sock = not hasattr(self._sock, "recv_into")
 
         fixed_header = bytearray([0x10])
 
@@ -609,10 +667,7 @@ class MQTT:
         remaining_length = 12 + len(self.client_id.encode("utf-8"))
         if self._username is not None:
             remaining_length += (
-                2
-                + len(self._username.encode("utf-8"))
-                + 2
-                + len(self._password.encode("utf-8"))
+                2 + len(self._username.encode("utf-8")) + 2 + len(self._password.encode("utf-8"))
             )
             var_header[7] |= 0xC0
         if self.keep_alive:
@@ -620,9 +675,7 @@ class MQTT:
             var_header[8] |= self.keep_alive >> 8
             var_header[9] |= self.keep_alive & 0x00FF
         if self._lw_topic:
-            remaining_length += (
-                2 + len(self._lw_topic.encode("utf-8")) + 2 + len(self._lw_msg)
-            )
+            remaining_length += 2 + len(self._lw_topic.encode("utf-8")) + 2 + len(self._lw_msg)
             var_header[7] |= 0x4 | (self._lw_qos & 0x1) << 3 | (self._lw_qos & 0x2) << 3
             var_header[7] |= self._lw_retain << 5
 
@@ -630,8 +683,8 @@ class MQTT:
         self.logger.debug("Sending CONNECT to broker...")
         self.logger.debug(f"Fixed Header: {fixed_header}")
         self.logger.debug(f"Variable Header: {var_header}")
-        self._sock.send(fixed_header)
-        self._sock.send(var_header)
+        self._send_bytes(fixed_header)
+        self._send_bytes(var_header)
         # [MQTT-3.1.3-4]
         self._send_str(self.client_id)
         if self._lw_topic:
@@ -641,15 +694,16 @@ class MQTT:
         if self._username is not None:
             self._send_str(self._username)
             self._send_str(self._password)
+        self._last_msg_sent_timestamp = time.ticks_ms()
         self.logger.debug("Receiving CONNACK packet from broker")
-        stamp = self.get_monotonic_time()
+        stamp = time.ticks_ms()
         while True:
             op = self._wait_for_msg()
             if op == 32:
                 rc = self._sock_exact_recv(3)
                 assert rc[0] == 0x02
                 if rc[2] != 0x00:
-                    raise MMQTTException(CONNACK_ERRORS[rc[2]])
+                    raise MMQTTException(CONNACK_ERRORS[rc[2]], code=rc[2])
                 self._is_connected = True
                 result = rc[0] & 1
                 if self.on_connect is not None:
@@ -658,15 +712,18 @@ class MQTT:
                 return result
 
             if op is None:
-                if self.get_monotonic_time() - stamp > self._recv_timeout:
+                if time.ticks_diff(time.ticks_ms(), stamp) > self._recv_timeout_ms:
                     raise MMQTTException(
-                        f"No data received from broker for {self._recv_timeout} seconds."
+                        f"No data received from broker for {self._recv_timeout_ms} msecs."
                     )
 
-    # pylint: disable=no-self-use
-    def _encode_remaining_length(
-        self, fixed_header: bytearray, remaining_length: int
-    ) -> None:
+    def _close_socket(self):
+        if self._sock:
+            self.logger.debug("Closing socket")
+            self._sock.close()
+            self._sock = None
+
+    def _encode_remaining_length(self, fixed_header: bytearray, remaining_length: int) -> None:
         """Encode Remaining Length [2.2.3]"""
         if remaining_length > 268_435_455:
             raise MMQTTException("invalid remaining length")
@@ -688,13 +745,13 @@ class MQTT:
         self._connected()
         self.logger.debug("Sending DISCONNECT packet to broker")
         try:
-            self._sock.send(MQTT_DISCONNECT)
-        except RuntimeError as e:
+            self._send_bytes(MQTT_DISCONNECT)
+        except (MemoryError, OSError, RuntimeError) as e:
             self.logger.warning(f"Unable to send DISCONNECT packet: {e}")
-        self.logger.debug("Closing socket")
-        self._sock.close()
+        self._close_socket()
         self._is_connected = False
         self._subscribed_topics = []
+        self._last_msg_sent_timestamp = 0
         if self.on_disconnect is not None:
             self.on_disconnect(self, self.user_data, 0)
 
@@ -705,15 +762,17 @@ class MQTT:
         """
         self._connected()
         self.logger.debug("Sending PINGREQ")
-        self._sock.send(MQTT_PINGREQ)
+        self._send_bytes(MQTT_PINGREQ)
         ping_timeout = self.keep_alive
-        stamp = self.get_monotonic_time()
+        stamp = time.ticks_ms()
+
+        self._last_msg_sent_timestamp = stamp
         rc, rcs = None, []
         while rc != MQTT_PINGRESP:
             rc = self._wait_for_msg()
             if rc:
                 rcs.append(rc)
-            if self.get_monotonic_time() - stamp > ping_timeout:
+            if time.ticks_diff(time.ticks_ms(), stamp) / 1000 > ping_timeout:
                 raise MMQTTException("PINGRESP not returned from broker.")
         return rcs
 
@@ -736,10 +795,10 @@ class MQTT:
         self._connected()
         self._valid_topic(topic)
         if "+" in topic or "#" in topic:
-            raise MMQTTException("Publish topic can not contain wildcards.")
+            raise ValueError("Publish topic can not contain wildcards.")
         # check msg/qos kwargs
         if msg is None:
-            raise MMQTTException("Message can not be None.")
+            raise ValueError("Message can not be None.")
         if isinstance(msg, (int, float)):
             msg = str(msg).encode("ascii")
         elif isinstance(msg, str):
@@ -747,12 +806,11 @@ class MQTT:
         elif isinstance(msg, bytes):
             pass
         else:
-            raise MMQTTException("Invalid message data type.")
+            raise ValueError("Invalid message data type.")
         if len(msg) > MQTT_MSG_MAX_SZ:
-            raise MMQTTException(f"Message size larger than {MQTT_MSG_MAX_SZ} bytes.")
-        assert (
-            0 <= qos <= 1
-        ), "Quality of Service Level 2 is unsupported by this library."
+            raise ValueError(f"Message size larger than {MQTT_MSG_MAX_SZ} bytes.")
+
+        self._valid_qos(qos)
 
         # fixed header. [3.3.1.2], [3.3.1.3]
         pub_hdr_fixed = bytearray([MQTT_PUBLISH | retain | qos << 1])
@@ -779,13 +837,14 @@ class MQTT:
             qos,
             retain,
         )
-        self._sock.send(pub_hdr_fixed)
-        self._sock.send(pub_hdr_var)
-        self._sock.send(msg)
+        self._send_bytes(pub_hdr_fixed)
+        self._send_bytes(pub_hdr_var)
+        self._send_bytes(msg)
+        self._last_msg_sent_timestamp = time.ticks_ms()
         if qos == 0 and self.on_publish is not None:
             self.on_publish(self, self.user_data, topic, self._pid)
         if qos == 1:
-            stamp = self.get_monotonic_time()
+            stamp = time.ticks_ms()
             while True:
                 op = self._wait_for_msg()
                 if op == 0x40:
@@ -799,9 +858,9 @@ class MQTT:
                         return
 
                 if op is None:
-                    if self.get_monotonic_time() - stamp > self._recv_timeout:
+                    if time.ticks_diff(time.ticks_ms(), stamp) > self._recv_timeout_ms:
                         raise MMQTTException(
-                            f"No data received from broker for {self._recv_timeout} seconds."
+                            f"No data received from broker for {self._recv_timeout_ms} seconds."
                         )
 
     def subscribe(self, topic: Optional[Union[tuple, str, list]], qos: int = 0) -> None:
@@ -842,14 +901,14 @@ class MQTT:
         packet_length += sum(len(topic.encode("utf-8")) for topic, qos in topics)
         self._encode_remaining_length(fixed_header, remaining_length=packet_length)
         self.logger.debug(f"Fixed Header: {fixed_header}")
-        self._sock.send(fixed_header)
+        self._send_bytes(fixed_header)
         self._pid = self._pid + 1 if self._pid < 0xFFFF else 1
         packet_id_bytes = self._pid.to_bytes(2, "big")
         var_header = packet_id_bytes
         self.logger.debug(f"Variable Header: {var_header}")
-        self._sock.send(var_header)
+        self._send_bytes(var_header)
         # attaching topic and QOS level to the packet
-        payload = bytes()
+        payload = b""
         for t, q in topics:
             topic_size = len(t.encode("utf-8")).to_bytes(2, "big")
             qos_byte = q.to_bytes(1, "big")
@@ -857,17 +916,18 @@ class MQTT:
         for t, q in topics:
             self.logger.debug(f"SUBSCRIBING to topic {t} with QoS {q}")
         self.logger.debug(f"payload: {payload}")
-        self._sock.send(payload)
-        stamp = self.get_monotonic_time()
+        self._send_bytes(payload)
+        stamp = time.ticks_ms()
+        self._last_msg_sent_timestamp = stamp
         while True:
             op = self._wait_for_msg()
             if op is None:
-                if self.get_monotonic_time() - stamp > self._recv_timeout:
+                if time.ticks_diff(time.ticks_ms(), stamp) > self._recv_timeout_ms:
                     raise MMQTTException(
-                        f"No data received from broker for {self._recv_timeout} seconds."
+                        f"No data received from broker for {self._recv_timeout_ms} seconds."
                     )
             else:
-                if op == 0x90:
+                if op == MQTT_SUBACK:
                     remaining_len = self._decode_remaining_length()
                     assert remaining_len > 0
                     rc = self._sock_exact_recv(2)
@@ -908,12 +968,10 @@ class MQTT:
             topics = []
             for t in topic:
                 self._valid_topic(t)
-                topics.append((t))
+                topics.append(t)
         for t in topics:
             if t not in self._subscribed_topics:
-                raise MMQTTException(
-                    "Topic must be subscribed to before attempting unsubscribe."
-                )
+                raise MMQTTStateError("Topic must be subscribed to before attempting unsubscribe.")
         # Assemble packet
         self.logger.debug("Sending UNSUBSCRIBE to broker...")
         fixed_header = bytearray([MQTT_UNSUB])
@@ -921,30 +979,31 @@ class MQTT:
         packet_length += sum(len(topic.encode("utf-8")) for topic in topics)
         self._encode_remaining_length(fixed_header, remaining_length=packet_length)
         self.logger.debug(f"Fixed Header: {fixed_header}")
-        self._sock.send(fixed_header)
+        self._send_bytes(fixed_header)
         self._pid = self._pid + 1 if self._pid < 0xFFFF else 1
         packet_id_bytes = self._pid.to_bytes(2, "big")
         var_header = packet_id_bytes
         self.logger.debug(f"Variable Header: {var_header}")
-        self._sock.send(var_header)
-        payload = bytes()
+        self._send_bytes(var_header)
+        payload = b""
         for t in topics:
             topic_size = len(t.encode("utf-8")).to_bytes(2, "big")
             payload += topic_size + t.encode()
         for t in topics:
             self.logger.debug(f"UNSUBSCRIBING from topic {t}")
-        self._sock.send(payload)
+        self._send_bytes(payload)
+        self._last_msg_sent_timestamp = time.ticks_ms()
         self.logger.debug("Waiting for UNSUBACK...")
         while True:
-            stamp = self.get_monotonic_time()
+            stamp = time.ticks_ms()
             op = self._wait_for_msg()
             if op is None:
-                if self.get_monotonic_time() - stamp > self._recv_timeout:
+                if time.ticks_diff(time.ticks_ms(), stamp) > self._recv_timeout_ms:
                     raise MMQTTException(
-                        f"No data received from broker for {self._recv_timeout} seconds."
+                        f"No data received from broker for {self._recv_timeout_ms} seconds."
                     )
             else:
-                if op == 176:
+                if op == MQTT_UNSUBACK:
                     rc = self._sock_exact_recv(3)
                     assert rc[0] == 0x02
                     # [MQTT-3.32]
@@ -954,10 +1013,12 @@ class MQTT:
                             self.on_unsubscribe(self, self.user_data, t, self._pid)
                         self._subscribed_topics.remove(t)
                     return
-
-                raise MMQTTException(
-                    f"invalid message received as response to UNSUBSCRIBE: {hex(op)}"
-                )
+                if op != MQTT_PUBLISH:
+                    # [3.10.4] The Server may continue to deliver existing messages buffered
+                    # for delivery to the client prior to sending the UNSUBACK Packet.
+                    raise MMQTTException(
+                        f"invalid message received as response to UNSUBSCRIBE: {hex(op)}"
+                    )
 
     def _recompute_reconnect_backoff(self) -> None:
         """
@@ -967,10 +1028,7 @@ class MQTT:
         """
         self._reconnect_attempt = self._reconnect_attempt + 1
         self._reconnect_timeout = 2**self._reconnect_attempt
-        # pylint: disable=consider-using-f-string
-        self.logger.debug(
-            "Reconnect timeout computed to {:.2f}".format(self._reconnect_timeout)
-        )
+        self.logger.debug(f"Reconnect timeout computed to {self._reconnect_timeout:.2f}")
 
         if self._reconnect_timeout > self._reconnect_maximum_backoff:
             self.logger.debug(
@@ -981,12 +1039,7 @@ class MQTT:
         # Add a sub-second jitter.
         # Even truncated timeout should have jitter added to it. This is why it is added here.
         jitter = randint(0, 1000) / 1000
-        # pylint: disable=consider-using-f-string
-        self.logger.debug(
-            "adding jitter {:.2f} to {:.2f} seconds".format(
-                jitter, self._reconnect_timeout
-            )
-        )
+        self.logger.debug(f"adding jitter {jitter:.2f} to {self._reconnect_timeout:.2f} seconds")
         self._reconnect_timeout += jitter
 
     def _reset_reconnect_backoff(self) -> None:
@@ -1008,13 +1061,18 @@ class MQTT:
         """
 
         self.logger.debug("Attempting to reconnect with MQTT broker")
-        ret = self.connect()
+        subscribed_topics = []
+        if self.is_connected():
+            # disconnect() will reset subscribed topics so stash them now.
+            if resub_topics:
+                subscribed_topics = self._subscribed_topics.copy()
+            self.disconnect()
+
+        ret = self.connect(session_id=self.session_id)
         self.logger.debug("Reconnected with broker")
-        if resub_topics:
-            self.logger.debug(
-                "Attempting to resubscribe to previously subscribed topics."
-            )
-            subscribed_topics = self._subscribed_topics.copy()
+
+        if resub_topics and subscribed_topics:
+            self.logger.debug("Attempting to resubscribe to previously subscribed topics.")
             self._subscribed_topics = []
             while subscribed_topics:
                 feed = subscribed_topics.pop()
@@ -1022,7 +1080,7 @@ class MQTT:
 
         return ret
 
-    def loop(self, timeout: float = 0) -> Optional[list[int]]:
+    def loop(self, timeout: float = 1.0) -> Optional[list[int]]:
         # pylint: disable = too-many-return-statements
         """Non-blocking message loop. Use this method to check for incoming messages.
         Returns list of packet types of any messages received or None.
@@ -1030,38 +1088,47 @@ class MQTT:
         :param float timeout: return after this timeout, in seconds.
 
         """
+        if timeout < self._socket_timeout:
+            raise ValueError(
+                f"loop timeout ({timeout}) must be >= "
+                + f"socket timeout ({self._socket_timeout}))"
+            )
+
         self._connected()
         self.logger.debug(f"waiting for messages for {timeout} seconds")
-        if self._timestamp == 0:
-            self._timestamp = self.get_monotonic_time()
-        current_time = self.get_monotonic_time()
-        if current_time - self._timestamp >= self.keep_alive:
-            self._timestamp = 0
-            # Handle KeepAlive by expecting a PINGREQ/PINGRESP from the server
-            self.logger.debug(
-                "KeepAlive period elapsed - requesting a PINGRESP from the server..."
-            )
-            rcs = self.ping()
-            return rcs
 
-        stamp = self.get_monotonic_time()
+        stamp = time.ticks_ms()
         rcs = []
 
         while True:
+            if time.ticks_diff(time.ticks_ms(), self._last_msg_sent_timestamp) / 1000 >= self.keep_alive:
+                # Handle KeepAlive by expecting a PINGREQ/PINGRESP from the server
+                self.logger.debug(
+                    "KeepAlive period elapsed - requesting a PINGRESP from the server..."
+                )
+                rcs.extend(self.ping())
+                # ping() itself contains a _wait_for_msg() loop which might have taken a while,
+                # so check here as well.
+                if time.ticks_diff(time.ticks_ms(), stamp) / 1000 > timeout:
+                    self.logger.debug(f"Loop timed out after {timeout} seconds")
+                    break
+
             rc = self._wait_for_msg()
             if rc is not None:
                 rcs.append(rc)
-            if self.get_monotonic_time() - stamp > timeout:
+            if time.ticks_diff(time.ticks_ms(), stamp) / 1000 > timeout:
                 self.logger.debug(f"Loop timed out after {timeout} seconds")
                 break
 
         return rcs if rcs else None
 
-    def _wait_for_msg(self) -> Optional[int]:
-        # pylint: disable = too-many-return-statements
-
+    def _wait_for_msg(  # noqa: PLR0912, Too many branches
+        self, timeout: Optional[float] = None
+    ) -> Optional[int]:
         """Reads and processes network events.
         Return the packet type or None if there is nothing to be received.
+
+        :param float timeout: return after this timeout, in seconds.
         """
         # CPython socket module contains a timeout attribute
         if hasattr(self._socket_pool, "timeout"):
@@ -1069,16 +1136,16 @@ class MQTT:
                 res = self._sock_exact_recv(1)
             except self._socket_pool.timeout:
                 return None
-        else:  # socketpool, esp32spi
+        else:  # socketpool, esp32spi, wiznet5k
             try:
-                res = self._sock_exact_recv(1)
+                res = self._sock_exact_recv(1, timeout=timeout)
             except OSError as error:
                 if error.errno in (errno.ETIMEDOUT, errno.EAGAIN):
                     # raised by a socket timeout if 0 bytes were present
                     return None
-                raise MMQTTException
+                raise MMQTTException("Unexpected error while waiting for messages") from error
 
-        if res in [None, b"", b"\x00"]:
+        if res in [None, b""]:
             # If we get here, it means that there is nothing to be received
             return None
         pkt_type = res[0] & MQTT_PKT_TYPE_MASK
@@ -1121,7 +1188,7 @@ class MQTT:
         if res[0] & 0x06 == 0x02:
             pkt = bytearray(b"\x40\x02\0\0")
             struct.pack_into("!H", pkt, 2, pid)
-            self._sock.send(pkt)
+            self._send_bytes(pkt)
         elif res[0] & 6 == 4:
             assert 0
 
@@ -1140,7 +1207,7 @@ class MQTT:
                 return n
             sh += 7
 
-    def _sock_exact_recv(self, bufsize: int) -> bytearray:
+    def _sock_exact_recv(self, bufsize: int, timeout: Optional[float] = None) -> bytearray:
         """Reads _exact_ number of bytes from the connected socket. Will only return
         bytearray with the exact number of bytes requested.
 
@@ -1151,29 +1218,30 @@ class MQTT:
         bytes is returned or trigger a timeout exception.
 
         :param int bufsize: number of bytes to receive
+        :param float timeout: timeout, in seconds. Defaults to keep_alive
         :return: byte array
         """
-        stamp = self.get_monotonic_time()
+        stamp = time.ticks_ms()
         if not self._backwards_compatible_sock:
-            # CPython/Socketpool Impl.
+            # CPython, socketpool, esp32spi, wiznet5k
             rc = bytearray(bufsize)
             mv = memoryview(rc)
             recv_len = self._sock.recv_into(rc, bufsize)
             to_read = bufsize - recv_len
             if to_read < 0:
                 raise MMQTTException(f"negative number of bytes to read: {to_read}")
-            read_timeout = self.keep_alive
+            read_timeout = timeout if timeout is not None else self._recv_timeout_ms / 1000
             mv = mv[recv_len:]
             while to_read > 0:
                 recv_len = self._sock.recv_into(mv, to_read)
                 to_read -= recv_len
                 mv = mv[recv_len:]
-                if self.get_monotonic_time() - stamp > read_timeout:
+                if time.ticks_diff(time.ticks_ms(), stamp) / 1000 > read_timeout:
                     raise MMQTTException(
                         f"Unable to receive {to_read} bytes within {read_timeout} seconds."
                     )
-        else:  # ESP32SPI Impl.
-            # This will timeout with socket timeout (not keepalive timeout)
+        else:  # Legacy: fona, esp_atcontrol
+            # This will time out with socket timeout (not receive timeout).
             rc = self._sock.recv(bufsize)
             if not rc:
                 self.logger.debug("_sock_exact_recv timeout")
@@ -1183,12 +1251,12 @@ class MQTT:
             # or raise exception if wait longer than read_timeout
             to_read = bufsize - len(rc)
             assert to_read >= 0
-            read_timeout = self.keep_alive
+            read_timeout = self._recv_timeout_ms
             while to_read > 0:
                 recv = self._sock.recv(to_read)
                 to_read -= len(recv)
                 rc += recv
-                if self.get_monotonic_time() - stamp > read_timeout:
+                if time.ticks_diff(time.ticks_ms(), stamp) > read_timeout:
                     raise MMQTTException(
                         f"Unable to receive {to_read} bytes within {read_timeout} seconds."
                     )
@@ -1201,11 +1269,11 @@ class MQTT:
 
         """
         if isinstance(string, str):
-            self._sock.send(struct.pack("!H", len(string.encode("utf-8"))))
-            self._sock.send(str.encode(string, "utf-8"))
+            self._send_bytes(struct.pack("!H", len(string.encode("utf-8"))))
+            self._send_bytes(str.encode(string, "utf-8"))
         else:
-            self._sock.send(struct.pack("!H", len(string)))
-            self._sock.send(string)
+            self._send_bytes(struct.pack("!H", len(string)))
+            self._send_bytes(string)
 
     @staticmethod
     def _valid_topic(topic: str) -> None:
@@ -1215,13 +1283,13 @@ class MQTT:
 
         """
         if topic is None:
-            raise MMQTTException("Topic may not be NoneType")
+            raise ValueError("Topic may not be NoneType")
         # [MQTT-4.7.3-1]
         if not topic:
-            raise MMQTTException("Topic may not be empty.")
+            raise ValueError("Topic may not be empty.")
         # [MQTT-4.7.3-3]
         if len(topic.encode("utf-8")) > MQTT_TOPIC_LENGTH_LIMIT:
-            raise MMQTTException("Topic length is too large.")
+            raise ValueError(f"Encoded topic length is larger than {MQTT_TOPIC_LENGTH_LIMIT}")
 
     @staticmethod
     def _valid_qos(qos_level: int) -> None:
@@ -1232,16 +1300,16 @@ class MQTT:
         """
         if isinstance(qos_level, int):
             if qos_level < 0 or qos_level > 2:
-                raise MMQTTException("QoS must be between 1 and 2.")
+                raise NotImplementedError("QoS must be between 1 and 2.")
         else:
-            raise MMQTTException("QoS must be an integer.")
+            raise ValueError("QoS must be an integer.")
 
     def _connected(self) -> None:
         """Returns MQTT client session status as True if connected, raises
-        a `MMQTTException` if `False`.
+        a `MMQTTStateError exception` if `False`.
         """
         if not self.is_connected():
-            raise MMQTTException("MiniMQTT is not connected")
+            raise MMQTTStateError("MiniMQTT is not connected")
 
     def is_connected(self) -> bool:
         """Returns MQTT client session status as True if connected, False
