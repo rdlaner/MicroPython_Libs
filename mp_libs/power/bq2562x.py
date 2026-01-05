@@ -154,7 +154,7 @@ class BQ25628():
             raise ValueError(f"ADC Enable Failed. Invalid ADC: {adc}")
 
         if enable is None:
-            return bool(self._read_reg(0x27, 1, adc, adc))
+            return not bool(self._read_reg(0x27, 1, adc, adc))
 
         self._write_reg(0x27, 1, adc, adc, not enable)
         return None
@@ -362,8 +362,8 @@ class BQ25628():
             bool: True if enabled, False if disabled.
         """
         reg_val = self._read_reg(0x23, 1, 0, 7)
-        reg_val = reg_val | self._read_reg(0x23, 1, 0, 7)
-        reg_val = reg_val | self._read_reg(0x23, 1, 0, 7)
+        reg_val = reg_val | self._read_reg(0x24, 1, 0, 7)
+        reg_val = reg_val | self._read_reg(0x25, 1, 0, 7)
 
         return reg_val == 0
 
@@ -444,13 +444,13 @@ class BQ25628():
         """Enable/Disable TS
 
         Args:
-            enable (bool): True to disable, False to disable.
+            enable (bool): True to enable, False to disable.
         """
         self._write_reg(0x1A, 1, 7, 7, not enable)
         self.adc_enable(ADC_TS, enable)
 
     @property
-    def wd_enable(self) -> int:
+    def wd_enable(self) -> bool:
         """Check if watchdog timer is enabled or not.
 
         Returns:

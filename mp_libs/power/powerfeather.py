@@ -114,7 +114,6 @@ class PowerFeather():
             capacity = 2600
 
         # Set termination current to C // 10 or within the charger's min/max limits
-        self._charger_adc_time = 0
         self._batt_type = batt_type
         self._batt_cap = capacity
         if self._batt_cap:
@@ -175,6 +174,7 @@ class PowerFeather():
             apa = self._fuel_gauge.apa_calculate(self._batt_type, self._batt_cap)
             self._fuel_gauge.apa = apa
             self._fuel_gauge.batt_profile = self._batt_type
+            self._fuel_gauge.batt_rsoc_init()
             self._fuel_gauge.termination_factor(self._term_curr, self._batt_cap)
             self._fuel_gauge.initialized = True
         else:
@@ -186,8 +186,8 @@ class PowerFeather():
         # Use term_curr value to determine if charger has been initialized. It's possible
         # a charge was initialized with a different battery capacity and since then a new battery
         # with a different capacity has been applied.
-        if self._charger and self._term_curr == self._charger.term_current:
-            return True
+        if self._charger and self._term_curr is not None:
+            return self._term_curr == self._charger.term_current
         return False
 
     def _is_fuel_gauge_initialized(self) -> bool:
@@ -204,7 +204,7 @@ class PowerFeather():
 
     @property
     def _charger_adc_enable(self) -> bool:
-        return not self._charger.adc_enable(bq.ADC_IBUS)
+        return self._charger.adc_enable(bq.ADC_IBUS)
 
     @_charger_adc_enable.setter
     def _charger_adc_enable(self, enable: bool):
@@ -224,6 +224,7 @@ class PowerFeather():
             self._charger_adc_enable = True
 
         self._charger.adc_setup(True, bq.ADC_RATE_ONESHOT, bq.ADC_RESOLUTION_10, False, False)
+        # TODO: Consider polling ADC_DONE_STAT to potentially reduce delay time
         time.sleep_ms(CHARGER_ADC_WAIT_TIME_MS)  # pylint: disable=no-member
         logger.debug("Charger ADC updated")
 
@@ -486,6 +487,8 @@ class PowerFeather():
         If battery is charging, will return the estimated number of minutes until battery is fully charged.
         If battery is discharging, will return the estimated number of minutes until battery is fully discharged.
 
+        NOTE: Checking this value will cause a delay of CHARGER_ADC_WAIT_TIME_MS
+
         Raises:
             BatteryError: SQT power (I2C PU power) is not enabled.
             BatteryError: No battery is connected.
@@ -549,7 +552,7 @@ class PowerFeather():
             self._charger_adc_update()
             voltage = self._charger.batt_voltage
 
-        logger.debug("Measured Batt Voltage: {voltage} mV")
+        logger.debug(f"Measured Batt Voltage: {voltage} mV")
         return voltage
 
     def is_usb_connected(self) -> bool:
@@ -558,6 +561,10 @@ class PowerFeather():
         Returns:
             bool: True if USB-C is connected. False if not.
         """
+        if not self._pin_sqt.value():
+            raise BatteryError("Can't check USB connection until SQT is enabled")
+
+        self._charger_adc_update()
         return self._charger.bus_voltage > 0
 
     def led_on(self) -> None:
@@ -630,7 +637,7 @@ class PowerFeather():
         If no value is specified, will return the current status.
 
         Args:
-            enable (Optional[bool]): True to disable, False to disable. Defaults to None.
+            enable (Optional[bool]): True to enable, False to disable. Defaults to None.
 
         Returns:
             Optional[bool]: Current SQT enable status, if none provided.

@@ -126,6 +126,9 @@ MIN_BATT_CAPACITY = const(50)
 MAX_TERM_FACTOR = const(300)
 MIN_TERM_FACTOR = const(2)
 
+# Misc
+RSOC_INIT_CMD_DATA = const(0xAA55)
+
 
 # Globals
 logger = logging.getLogger("LC709204F")
@@ -217,6 +220,9 @@ class LC709204F():
     def apa_calculate(self, batt_profile: int, batt_cap: int) -> int:
         """Calculate the APA value based on the battery profile and capacity provided.
 
+        Note: Currently only supports BATT_PROF_3V7_4V2, BATT_PROF_UR18650ZY,
+        and BATT_PROF_ICR18650_26H profiles.
+
         Args:
             batt_profile (int): Battery profile. One of the BATT_PROF_XXX options.
             batt_cap (int): Battery capacity mah.
@@ -302,6 +308,10 @@ class LC709204F():
 
         self._write_reg(REG_BATT_PROF, batt_profile)
 
+    def batt_rsoc_init(self):
+        """Initializes the RSOC reading. Should be done after apa and battery profile are set"""
+        self._write_reg(REG_INIT_RSOC, RSOC_INIT_CMD_DATA)
+
     @property
     def batt_rsoc(self) -> int:
         """Get battery Relative State of Charge (RSOC) percentage.
@@ -355,7 +365,7 @@ class LC709204F():
             bool: Current initialization status.
         """
         curr_status = self._read_reg(REG_BATT_STATUS)
-        return bool(curr_status & (1 << BATT_STATUS_INITIALIZED))
+        return not bool(curr_status & (1 << BATT_STATUS_INITIALIZED))
 
     @initialized.setter
     def initialized(self, value: bool) -> None:
