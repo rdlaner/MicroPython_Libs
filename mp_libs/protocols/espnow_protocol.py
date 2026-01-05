@@ -273,10 +273,12 @@ class EspnowProtocol(InterfaceProtocol):
         logger.debug("espnow configured")
 
     def _network_enable(self):
+        self.wifi._sta.active(True)
         self.epn.active(True)
 
     def _network_disable(self):
         self.epn.active(False)
+        self.wifi._sta.active(False)
 
     def connect(self, **kwargs) -> bool:
         """Connect espnow.
@@ -554,11 +556,12 @@ class EspnowProtocol(InterfaceProtocol):
         # except (ValueError, RuntimeError, IDFError) as exc:
         #     print(f"ESPNOW failed sending metrics\n{exc}")
 
-    def update_channel(self, channel: int) -> None:
+    def update_channel(self, channel: int, force: bool = False) -> None:
         """Update the wifi channel to the one specified.
 
         Args:
             channel (int): New wifi channel number
+            force (bool): Force a channel update even if channel matches current channel
 
         Raises:
             EspnowError: Failed to update wifi channel
@@ -566,6 +569,10 @@ class EspnowProtocol(InterfaceProtocol):
         """
         if not (1 <= channel <= 14):
             raise EspnowError(f"Invalid wifi channel: {channel}")
+
+        if not force and self.wifi._sta.config("channel") == channel:
+            logger.info(f"epn channel already set to: {channel}")
+            return
 
         logger.debug(f"Changing channel to: {channel}")
 
