@@ -82,21 +82,28 @@ class StreamHandler(Handler):
         self.terminator = "\n"
 
     def close(self):
-        if hasattr(self.stream, "flush"):
-            self.stream.flush()
+        if self.stream and hasattr(self.stream, "flush"):
+            try:
+                self.stream.flush()
+            except ValueError:
+                pass
+
+        if self.stream and hasattr(self.stream, "close"):
+            try:
+                self.stream.close()
+            except ValueError:
+                pass
+
+        self.stream = None
 
     def emit(self, record):
-        if record.levelno >= self.level:
+        if record.levelno >= self.level and self.stream:
             self.stream.write(self.format(record) + self.terminator)
 
 
 class FileHandler(StreamHandler):
     def __init__(self, filename, mode="a", encoding="UTF-8"):
         super().__init__(stream=open(filename, mode=mode, encoding=encoding))
-
-    def close(self):
-        super().close()
-        self.stream.close()
 
 
 class BufferHandler(Handler):
@@ -242,10 +249,12 @@ def exception(msg, *args):
 
 
 def shutdown():
-    for k, logger in _loggers.items():
+    for logger in _loggers.values():
         for h in logger.handlers:
             h.close()
-        _loggers.pop(logger, None)
+        logger.handlers = []
+
+    _loggers.clear()
 
 
 def addLevelName(level, name):
