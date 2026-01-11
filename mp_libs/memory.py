@@ -38,6 +38,7 @@ ELEMENT_DATA_TYPE_OFFSET = const(2)
 ELEMENT_NAME_OFFSET = const(3)
 ELEMENT_MAX_DATA_LEN = const(255)
 ELEMENT_MAX_NAME_LEN = const(255)
+SCRATCH_BUFF_SIZE = const(128)
 
 # Globals
 logger = logging.getLogger("memory")
@@ -77,7 +78,7 @@ class BackupRAM():
       * Element name - string of length 'name length'
       * Element data - of type 'data type' and of size 'data length'
     """
-    def __init__(self, offset: int = 0, size: Optional[int] = None, reset: bool = False) -> None:
+    def __init__(self, offset: int = 0, size: Optional[int] = None, reset: bool = False, scratch_size: int = SCRATCH_BUFF_SIZE) -> None:
         if size is not None and size <= ELEMENTS_OFFSET:
             raise MemoryError(f"Given size ({size}) is too small. Must be greater than {ELEMENTS_OFFSET}.")
 
@@ -87,6 +88,7 @@ class BackupRAM():
         self.offset = offset
         self.size = size
         self.rtc = RTC()
+        self.scratch_buf = bytearray(scratch_size)
 
         valid_magic = self._check_magic_num()
         if not valid_magic:
@@ -121,60 +123,55 @@ class BackupRAM():
         name_len = self._element_get_name_length(start_byte)
         data_len = self._element_get_data_len(start_byte)
         data_type = self._element_get_data_type(start_byte)
-        offset = start_byte +\
-            struct.calcsize(ELEMENT_FORMAT[ELEMENT_NAME_LEN_OFFSET]) +\
-            struct.calcsize(ELEMENT_FORMAT[ELEMENT_DATA_LEN_OFFSET]) +\
-            struct.calcsize(ELEMENT_FORMAT[ELEMENT_DATA_TYPE_OFFSET]) +\
-            name_len
-        byte_data = bytearray()
+        offset = start_byte + ELEMENT_NAME_OFFSET + name_len
 
-        for i in range(data_len):
-            byte_data.append(self.rtc[offset + i])
-
+        # If data is a string
         if data_type == "s":
-            data_type = f"{data_len}s"
+            byte_data = bytearray(data_len)
+            for i in range(data_len):
+                byte_data[i] = self.rtc[offset + i]
 
-        result = struct.unpack(f">{data_type}", byte_data)[0]
+            return byte_data.decode()
 
-        if "s" in data_type:
-            result = result.decode("utf-8")
+        # Use scratch buffer if large enough
+        if data_len <= len(self.scratch_buf):
+            for i in range(data_len):
+                self.scratch_buf[i] = self.rtc[offset + i]
 
-        return result
+            return struct.unpack_from(f">{data_type}", self.scratch_buf, 0)[0]
+
+        # Use pre-allocated bytearray if scratch buf is too small
+        byte_data = bytearray(data_len)
+        for i in range(data_len):
+            byte_data[i] = self.rtc[offset + i]
+
+        return struct.unpack(f">{data_type}", byte_data)[0]
 
     def _element_get_data_len(self, start_byte: int) -> int:
-        byte_data = bytearray([self.rtc[start_byte + ELEMENT_DATA_LEN_OFFSET]])
-        return struct.unpack_from(">B", byte_data, 0)[0]
+        return self.rtc[start_byte + ELEMENT_DATA_LEN_OFFSET]
 
     def _element_get_data_type(self, start_byte: int) -> str:
-        byte_data = bytearray([self.rtc[start_byte + ELEMENT_DATA_TYPE_OFFSET]])
-        return struct.unpack_from(">s", byte_data, 0)[0].decode()
+        return chr(self.rtc[start_byte + ELEMENT_DATA_TYPE_OFFSET])
 
     def _element_get_name(self, start_byte: int) -> str:
+        offset = start_byte + ELEMENT_NAME_OFFSET
         name_len = self._element_get_name_length(start_byte)
-        offset = start_byte +\
-            struct.calcsize(ELEMENT_FORMAT[ELEMENT_NAME_LEN_OFFSET]) +\
-            struct.calcsize(ELEMENT_FORMAT[ELEMENT_DATA_LEN_OFFSET]) +\
-            struct.calcsize(ELEMENT_FORMAT[ELEMENT_DATA_TYPE_OFFSET])
-        byte_data = bytearray()
 
+        # Pre-allocate bytearray to avoid multiple potential re-allocations
+        byte_data = bytearray(name_len)
         for i in range(name_len):
-            byte_data.append(self.rtc[offset + i])
+            byte_data[i] = self.rtc[offset + i]
 
-        return struct.unpack(f">{name_len}s", byte_data)[0].decode()
+        # We know that name is a string, so just try decoding w/o unpacking
+        return byte_data.decode()
 
     def _element_get_name_length(self, start_byte: int) -> int:
-        byte_data = bytearray([self.rtc[start_byte + ELEMENT_NAME_LEN_OFFSET]])
-        return struct.unpack_from(">B", byte_data, 0)[0]
+        return self.rtc[start_byte + ELEMENT_NAME_LEN_OFFSET]
 
     def _element_get_size(self, start_byte: int) -> int:
         name_len = self._element_get_name_length(start_byte)
         data_len = self._element_get_data_len(start_byte)
-        size = struct.calcsize(ELEMENT_FORMAT[ELEMENT_NAME_LEN_OFFSET]) +\
-            struct.calcsize(ELEMENT_FORMAT[ELEMENT_DATA_LEN_OFFSET]) +\
-            struct.calcsize(ELEMENT_FORMAT[ELEMENT_DATA_TYPE_OFFSET]) +\
-            name_len +\
-            data_len
-        return size
+        return ELEMENT_NAME_OFFSET + name_len + data_len
 
     def _get_free_index(self) -> int:
         return self._get_rtc_memory_data(self.offset + FREE_INDEX_OFFSET, self.offset + FREE_INDEX_OFFSET + 2, "H")
@@ -186,10 +183,19 @@ class BackupRAM():
         return self._get_rtc_memory_data(self.offset + NUM_ELEMS_OFFSET, self.offset + NUM_ELEMS_OFFSET + 2, "H")
 
     def _get_rtc_memory_data(self, start_byte: int, end_byte: int, data_type: str):
-        # rtc memory doesn't support slicing, so have to iterate
-        byte_data = bytearray()
-        for i in range(start_byte, end_byte):
-            byte_data.append(self.rtc[i])
+        size = end_byte - start_byte
+
+        # Use scratch buffer if large enough
+        if size <= len(self.scratch_buf):
+            for i in range(size):
+                self.scratch_buf[i] = self.rtc[start_byte + i]
+
+            return struct.unpack_from(f">{data_type}", self.scratch_buf, 0)[0]
+
+        # Use pre-allocated bytearray if scratch buf is too small
+        byte_data = bytearray(size)
+        for i in range(size):
+            byte_data[i] = self.rtc[start_byte + i]
 
         return struct.unpack(f">{data_type}", byte_data)[0]
 
@@ -203,9 +209,16 @@ class BackupRAM():
         self._set_rtc_memory_data(self.offset + NUM_ELEMS_OFFSET, "H", value)
 
     def _set_rtc_memory_data(self, start_byte: int, data_type: str, data) -> None:
-        byte_data = struct.pack(f">{data_type}", data)
-        for i, byte in enumerate(byte_data):
-            self.rtc[start_byte + i] = byte
+        size = struct.calcsize(data_type)
+
+        if size <= len(self.scratch_buf):
+            struct.pack_into(f">{data_type}", self.scratch_buf, 0, data)
+            for i in range(size):
+                self.rtc[start_byte + i] = self.scratch_buf[i]
+        else:
+            byte_data = struct.pack(f">{data_type}", data)
+            for i, byte in enumerate(byte_data):
+                self.rtc[start_byte + i] = byte
 
     @staticmethod
     def reset_rtc() -> None:
@@ -237,24 +250,19 @@ class BackupRAM():
         if len(name) > ELEMENT_MAX_NAME_LEN:
             name = name[0:ELEMENT_MAX_NAME_LEN]
 
-        # Pack up the element: name_len, data_len, data_type, name, data
-        packed_data = struct.pack(
-            ELEMENT_FORMAT_STR % (len(name), data_type_fmt),
-            len(name),
-            struct.calcsize(data_type_fmt),
-            data_type.encode(),
-            name.encode(),
-            data
-        )
+        # Calculate total size
+        name_bytes = name.encode()
+        data_size = struct.calcsize(data_type_fmt)
+        total_size = ELEMENT_NAME_OFFSET + len(name_bytes) + data_size
 
         # Make sure there is enough room for the new element
         index = self._get_free_index()
-        if self.size and (index + len(packed_data) > self.offset + self.size):
+        if self.size and (index + total_size > self.offset + self.size):
             msg = (
                 "Attempted to write beyond size of backup ram instance\n" +
                 f"Offset: {self.offset}, " +
                 f"Max size: {self.size} bytes, " +
-                f"Overran by: {(index + len(packed_data) - (self.offset + self.size))} bytes"
+                f"Overran by: {(index + total_size - (self.offset + self.size))} bytes"
             )
 
             if clear_if_full:
@@ -264,12 +272,12 @@ class BackupRAM():
                 index = self._get_free_index()
             else:
                 raise MemoryError(msg)
-        if index + len(packed_data) > self.rtc.MEM_SIZE:
+        if index + total_size > self.rtc.MEM_SIZE:
             msg = (
                 "Attempted to write beyond the max size of rtc.memory\n" +
                 f"Offset: {self.offset}, " +
                 f"Max size: {self.rtc.MEM_SIZE}, " +
-                f"Overran by: {(index + len(packed_data) - self.rtc.MEM_SIZE)}"
+                f"Overran by: {(index + total_size - self.rtc.MEM_SIZE)}"
             )
 
             if clear_if_full:
@@ -280,10 +288,33 @@ class BackupRAM():
             else:
                 raise MemoryError(msg)
 
+        # Pack up the element: name_len, data_len, data_type, name, data
+        if total_size <= len(self.scratch_buf):
+            buf = self.scratch_buf
+            struct.pack_into(
+                ELEMENT_FORMAT_STR % (len(name), data_type_fmt),
+                self.scratch_buf,
+                0,
+                len(name),
+                struct.calcsize(data_type_fmt),
+                data_type.encode(),
+                name.encode(),
+                data
+            )
+        else:
+            buf = struct.pack(
+                ELEMENT_FORMAT_STR % (len(name), data_type_fmt),
+                len(name),
+                struct.calcsize(data_type_fmt),
+                data_type.encode(),
+                name.encode(),
+                data
+            )
+
         # Append element to next available index in rtc bytearray
         self._elements_lut[name] = index
-        for byte in packed_data:
-            self.rtc[index] = byte
+        for i in range(total_size):
+            self.rtc[index] = buf[i]
             index += 1
 
         # Update free index and num elements
@@ -358,19 +389,37 @@ class BackupRAM():
         else:
             data_type_fmt = data_type
 
+        # Calculate total size
+        name_bytes = name.encode()
+        data_size = struct.calcsize(data_type_fmt)
+        total_size = ELEMENT_NAME_OFFSET + len(name_bytes) + data_size
+
         # Rebuild packed struct w/ new data
-        packed_data = struct.pack(
-            ELEMENT_FORMAT_STR % (len(name), data_type_fmt),
-            len(name),
-            struct.calcsize(data_type_fmt),
-            data_type.encode(),
-            name.encode(),
-            data
-        )
+        if total_size <= len(self.scratch_buf):
+            buf = self.scratch_buf
+            struct.pack_into(
+                ELEMENT_FORMAT_STR % (len(name), data_type_fmt),
+                self.scratch_buf,
+                0,
+                len(name),
+                struct.calcsize(data_type_fmt),
+                data_type.encode(),
+                name.encode(),
+                data
+            )
+        else:
+            buf = struct.pack(
+                ELEMENT_FORMAT_STR % (len(name), data_type_fmt),
+                len(name),
+                struct.calcsize(data_type_fmt),
+                data_type.encode(),
+                name.encode(),
+                data
+            )
 
         # Update element in memory
-        for i, byte in enumerate(packed_data):
-            self.rtc[start_byte + i] = byte
+        for i in range(total_size):
+            self.rtc[start_byte + i] = buf[i]
 
 
 class BackupList(BackupRAM):
